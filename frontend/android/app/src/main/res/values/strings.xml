@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">某刻校园</string>
+    <string name="title_activity_main">某刻校园</string>
+    <string name="package_name">cn.mouke.campus</string>
+    <string name="custom_url_scheme">cn.mouke.campus</string>
+</resources>

@@ -1,0 +1,58 @@
+# Dependencies and virtual environments
+frontend/node_modules/
+backend/.deps/
+backend/.venv/
+**/__pycache__/
+*.py[cod]
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+!*.env.example
+frontend/.env.mobile
+backend/smtp.local.env
+
+# Backend runtime data
+backend/app/*.db
+backend/app/*.db-*
+backend/app/*.db.*
+backend/app/uploads/
+backend/app/map_cache/
+
+# Frontend and Android generated files
+frontend/dist/
+frontend/android/.gradle/
+frontend/android/.idea/
+frontend/android/**/build/
+frontend/android/local.properties
+frontend/android/capacitor-cordova-android-plugins/
+frontend/android/app/src/main/assets/public/
+frontend/android/.cxx/
+
+# Build artifacts belong in GitHub Releases
+*.apk
+*.aab
+
+# Logs, temporary files and editor settings
+*.log
+*.log.*
+*.err
+*.tmp
+*.temp
+.vscode/
+.idea/
+*.iml
+
+# Signing keys and certificates
+*.jks
+*.keystore
+*.p12
+*.pem
+*.key
+
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini
