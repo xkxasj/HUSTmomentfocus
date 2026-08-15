@@ -1,9 +1,19 @@
 <script setup lang="ts">
+import { onBeforeUnmount, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import PeerLocationMap from '../components/PeerLocationMap.vue'
 import { useCampusApp } from '../composables/useCampusApp'
 
 const router = useRouter()
 const app = useCampusApp()
+let presenceTimer: number | undefined
+
+onMounted(async () => {
+  if (!app.conversations.value.length) await app.refreshConversations()
+  if (!app.activeConversation.value && app.conversations.value[0]) await app.openConversation(app.conversations.value[0])
+  presenceTimer = window.setInterval(app.refreshConversations, 30000)
+})
+onBeforeUnmount(() => window.clearInterval(presenceTimer))
 </script>
 
 <template>
@@ -27,16 +37,45 @@ const app = useCampusApp()
           <div><strong>{{ app.activeConversation.value.peer_alias }}</strong><small>因 {{ app.activeConversation.value.location_name }} 的一个片段相遇</small><span v-if="app.activeConversation.value.peer_presence" class="peer-presence">◎ {{ app.activeConversation.value.peer_presence.label }} · 已允许分享</span></div>
           <button aria-label="会话设置">•••</button>
         </header>
-        <blockquote class="origin-card"><span>对话起点 · {{ app.activeConversation.value.location_name }}</span><p>{{ app.activeConversation.value.origin_excerpt }}</p></blockquote>
+        <div class="conversation-context">
+          <blockquote class="origin-card"><span>对话起点 · {{ app.activeConversation.value.location_name }}</span><p>{{ app.activeConversation.value.origin_excerpt }}</p></blockquote>
+          <PeerLocationMap
+            v-if="app.activeConversation.value.peer_presence"
+            :latitude="app.activeConversation.value.peer_presence.latitude"
+            :longitude="app.activeConversation.value.peer_presence.longitude"
+            :label="app.activeConversation.value.peer_presence.label"
+            :updated-at="app.activeConversation.value.peer_presence.updated_at"
+          />
+        </div>
         <div class="message-stream">
           <div v-for="message in app.chatMessages.value" :key="message.id" class="message-bubble" :class="message.sender">
             <p>{{ message.content }}</p><time>{{ new Date(message.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }}</time>
           </div>
         </div>
-        <form class="message-composer" @submit.prevent="app.sendChatMessage">
-          <textarea v-model="app.messageDraft.value" maxlength="500" rows="1" placeholder="回应这一刻……"></textarea>
-          <button class="send-button" :disabled="!app.messageDraft.value.trim()">发送</button>
-        </form>
+        <button v-if="!app.replyComposerExpanded.value" class="reply-composer-collapsed" @click="app.expandReplyComposer">
+          <span>回应这一刻……</span><i>AI 可帮你想，也可以自己写</i>
+        </button>
+        <section v-else class="reply-assistant">
+          <header><div><strong>猜你会这样回</strong><small>点一下填入，可修改后发送</small></div><button :disabled="app.replySuggestionsLoading.value" @click="app.loadReplySuggestions(true)">换一组</button></header>
+          <template v-if="app.replySuggestionsLoading.value && !app.replySuggestions.value.length">
+            <div v-for="index in 3" :key="index" class="reply-option loading-option"><span></span></div>
+          </template>
+          <button
+            v-for="(suggestion, index) in app.replySuggestions.value"
+            :key="`${suggestion.intent}-${suggestion.text}`"
+            class="reply-option"
+            :class="{ selected: app.selectedReplyIndex.value === index }"
+            @click="app.selectReplySuggestion(index)"
+          >
+            <span>{{ suggestion.label }}</span><p>{{ suggestion.text }}</p><i>↗</i>
+          </button>
+          <form class="reply-option own-reply" @submit.prevent="app.sendChatMessage">
+            <span>自己说</span>
+            <textarea v-model="app.messageDraft.value" maxlength="500" rows="1" autofocus placeholder="写下你真正想说的……"></textarea>
+            <button class="send-button" :disabled="!app.messageDraft.value.trim()">发送</button>
+          </form>
+          <p class="reply-ai-note">AI 只提供草稿，不会替你自动发送。</p>
+        </section>
       </section>
       <section v-else class="no-conversation"><strong>还没有匿名回声</strong><p>从一条真正打动你的校园片段开始。</p><button class="primary-button" @click="router.push({ name: 'moments' })">去看看此刻</button></section>
     </div>

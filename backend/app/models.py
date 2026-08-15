@@ -27,6 +27,7 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255))
     alias: Mapped[str] = mapped_column(String(30))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     share_location: Mapped[bool] = mapped_column(Boolean, default=False)
     last_latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     last_longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -62,6 +63,7 @@ class Moment(Base):
     mood: Mapped[str] = mapped_column(String(20), default="平静")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     is_official: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_hidden: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     location: Mapped[Location] = relationship(back_populates="moments")
     resonances: Mapped[list["Resonance"]] = relationship(cascade="all, delete-orphan")
     echoes: Mapped[list["Echo"]] = relationship(cascade="all, delete-orphan")
@@ -100,4 +102,36 @@ class ChatMessage(Base):
     sender_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     sender: Mapped[str] = mapped_column(String(10))
     content: Mapped[str] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
+
+class SuggestionFeedback(Base):
+    __tablename__ = "suggestion_feedback"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    context_type: Mapped[str] = mapped_column(String(20), index=True)
+    suggestion: Mapped[str] = mapped_column(String(500), default="")
+    final_text: Mapped[str] = mapped_column(String(500))
+    selected_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
+
+
+class AnalyticsEvent(Base):
+    __tablename__ = "analytics_events"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    event_name: Mapped[str] = mapped_column(String(40), index=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    page: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
+
+
+class AdminAuditLog(Base):
+    __tablename__ = "admin_audit_logs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    admin_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    action: Mapped[str] = mapped_column(String(60), index=True)
+    target_type: Mapped[str] = mapped_column(String(30))
+    target_id: Mapped[int] = mapped_column(Integer, index=True)
+    detail: Mapped[str] = mapped_column(String(300), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)

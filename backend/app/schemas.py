@@ -35,6 +35,15 @@ class ImageCaptionRequest(BaseModel):
     location_id: int
     tone: str = Field(default="轻松自然", max_length=30)
 
+class ReplySuggestionRequest(BaseModel):
+    conversation_id: int
+
+class SuggestionFeedbackCreate(BaseModel):
+    context_type: str = Field(pattern="^(reply|caption)$")
+    suggestion: str = Field(default="", max_length=500)
+    final_text: str = Field(min_length=1, max_length=500)
+    selected_rank: int | None = Field(default=None, ge=1, le=3)
+
 class ConversationCreate(BaseModel):
     moment_id: int
 
@@ -59,3 +68,18 @@ class PrivacyUpdate(BaseModel):
 class PositionUpdate(BaseModel):
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
+
+
+class AnalyticsEventCreate(BaseModel):
+    event_name: str = Field(pattern="^(app_open|page_view|session_ping|moment_published|conversation_started|message_sent)$")
+    session_id: str = Field(min_length=8, max_length=64)
+    page: str | None = Field(default=None, max_length=80)
+    duration_seconds: int | None = Field(default=None, ge=0, le=86400)
+
+
+class AdminUserStatusUpdate(BaseModel):
+    is_active: bool
+
+
+class AdminMomentVisibilityUpdate(BaseModel):
+    is_hidden: bool

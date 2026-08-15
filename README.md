@@ -2,10 +2,6 @@
 
 一个用于验证“浏览地点 → 共鸣 → 回声 → 发布 → 回访”闭环的 Web 原型。
 
-## 下载安装
-
-Android 测试版请前往 [GitHub Releases](https://github.com/xkxasj/HUSTmomentfocus/releases/latest) 下载。APK 作为发行附件提供，不直接存入源码仓库。
-
 ## 技术结构
 
 - `frontend/`：Vue 3 + TypeScript + Vite
@@ -52,7 +48,7 @@ cd frontend
 
 ## Android 测试版
 
-当前 Android APK 通过局域网访问电脑上的 FastAPI。手机与电脑需连接同一 Wi-Fi 或电脑热点；登录页的“连接设置”可填写 `http://电脑当前IP:8000`，无需仅为 IP 变化重新打包。
+当前 Android APK 通过局域网访问电脑上的 FastAPI。手机与电脑需连接同一 Wi-Fi，电脑地址为 `192.168.43.162`。
 
 ```powershell
 cd backend
@@ -66,7 +62,7 @@ cd frontend
 npm.cmd run apk:debug
 ```
 
-生成文件位于 `frontend/android/app/build/outputs/apk/debug/app-debug.apk`。如电脑局域网 IP 变化，可参考 `frontend/.env.mobile.example` 创建或更新 `frontend/.env.mobile` 后重新打包。
+生成文件位于 `frontend/android/app/build/outputs/apk/debug/app-debug.apk`。如电脑局域网 IP 变化，需更新 `frontend/.env.mobile` 后重新打包。
 
 ## 真实邮箱验证码
 
@@ -76,31 +72,36 @@ npm.cmd run apk:debug
 2. 使用专门的服务邮箱填写用户名和邮箱密码/应用密码，不要使用个人主账号，也不要把密码发到聊天或提交到版本库。
 3. 保持 `MOUKE_DEV_EMAIL_CODES=0`，重新运行 `backend/start-backend.ps1`。
 
-发件邮箱不必是校园邮箱，收件人仍由系统限制为学号对应的教育邮箱。华科邮箱可尝试 `mail.hust.edu.cn`、SSL 端口 `465`；实际参数以学校邮件服务说明为准。
+华科邮箱可使用 `mail.hust.edu.cn`、SSL 端口 `465`；实际部署更建议申请项目专用发件账号并设置发送频率限制。
 
-Outlook 可以作为发件账号，但 Outlook.com / Exchange Online 当前要求 OAuth2（Modern Auth）。本项目现有的用户名+密码 SMTP 适配器不能直接使用普通 Outlook 密码；接入时应增加 Microsoft Graph/OAuth 发件适配器并提供应用注册凭据。
+## 管理员后台
 
-## 真实地图与图片文案
+管理员与普通用户使用同一套应用，服务端按账号角色隔离权限。后台入口为 `/#/admin`，普通账号无法读取管理接口。
 
-- 地图使用 MapLibre GL 5 和 OpenFreeMap/OpenStreetMap 矢量数据，手机只访问电脑后端；后端按需转发并缓存当前视野瓦片，不再使用水彩演示底图。
-- 图片支持 JPG、PNG、WebP，单张上限 15MB。
-- `POST /api/ai/image-caption` 已提供稳定接口。未配置视觉服务时返回明确的地点模板文案；配置 `MOUKE_VISION_API_URL`、`MOUKE_VISION_API_KEY` 后，适配器可真正识图并返回 `{"caption":"..."}`。
-- `GET /api/ai/status` 和 `GET /api/map/status` 可用于检查服务配置和地图缓存状态。
+首次设置或重置管理员账号：
+
+```powershell
+cd backend
+.\setup-admin.ps1
+```
+
+脚本会把账号和密码写入被 Git 忽略的 `backend/smtp.local.env`，不会把密码提交到仓库。设置后重启后端，再从普通登录页面使用管理员账号登录；个人页面会显示“进入管理后台”。生产部署时应将 `MOUKE_ADMIN_STUDENT_ID`、`MOUKE_ADMIN_EMAIL`、`MOUKE_ADMIN_PASSWORD` 配置为云平台的私密环境变量。
 
 ## 当前范围
 
 - “此刻校园”动态首页
 - 六个固定校园地点及情绪地图
 - 地点心情墙
-- 文字与图片发布
-- 三种共鸣与匿名回声
+- 文字心情发布
+- 匿名回声
 - 个人活动概览
-- AI 表达提示、隐私检查和图片文案接口
+- AI 表达提示和隐私检查占位接口
 
 ## 下一阶段
 
-1. Microsoft Graph/OAuth 或事务邮件服务接入
-2. 视觉模型与图片内容审核服务接入
-3. 语音录制与转写
-4. 内容举报和审核后台
-5. 通知与双向同意的限时对话
+1. 校园身份认证与前台匿名机制
+2. 图片上传、语音录制与转写
+3. 内容审核、举报和拉黑后台
+4. 通知与双向同意的限时对话
+5. 地图设计完善增加地点
+6. 埋点与校园验证实验

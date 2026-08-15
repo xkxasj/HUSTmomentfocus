@@ -19,8 +19,9 @@ from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session, selectinload
 from .database import Base, SessionLocal, engine, get_db
 from .auth import create_access_token, get_current_user, hash_code, hash_password, make_alias, send_verification_email, verify_password
-from .models import ChatMessage, Conversation, Echo, Location, Moment, Resonance, User, VerificationCode
-from .schemas import ConversationCreate, EchoCreate, ImageCaptionRequest, LoginRequest, MessageCreate, MomentCreate, MomentOut, PositionUpdate, PrivacyUpdate, PromptRequest, RegisterRequest, ResonanceCreate, VerificationRequest
+from .admin import bootstrap_admin, router as admin_router
+from .models import ChatMessage, Conversation, Echo, Location, Moment, Resonance, SuggestionFeedback, User, VerificationCode
+from .schemas import ConversationCreate, EchoCreate, ImageCaptionRequest, LoginRequest, MessageCreate, MomentCreate, MomentOut, PositionUpdate, PrivacyUpdate, PromptRequest, RegisterRequest, ReplySuggestionRequest, ResonanceCreate, SuggestionFeedbackCreate, VerificationRequest
 from .seed import seed_database
 
 UPLOAD_DIR = Path(__file__).resolve().parent / "uploads"
@@ -73,18 +74,23 @@ async def lifespan(_: FastAPI):
         if "latitude" not in columns: connection.execute(text("ALTER TABLE locations ADD COLUMN latitude FLOAT DEFAULT 30.5134"))
         if "longitude" not in columns: connection.execute(text("ALTER TABLE locations ADD COLUMN longitude FLOAT DEFAULT 114.4162"))
         if "category" not in columns: connection.execute(text("ALTER TABLE locations ADD COLUMN category VARCHAR(20) DEFAULT 'landmark'"))
+        user_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(users)"))}
+        if user_columns and "is_admin" not in user_columns: connection.execute(text("ALTER TABLE users ADD COLUMN is_admin BOOLEAN DEFAULT 0"))
         moment_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(moments)"))}
         if "user_id" not in moment_columns: connection.execute(text("ALTER TABLE moments ADD COLUMN user_id INTEGER REFERENCES users(id)"))
         if "image_url" not in moment_columns: connection.execute(text("ALTER TABLE moments ADD COLUMN image_url VARCHAR(255)"))
+        if "is_hidden" not in moment_columns: connection.execute(text("ALTER TABLE moments ADD COLUMN is_hidden BOOLEAN DEFAULT 0"))
         conversation_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(conversations)"))}
         if conversation_columns and "initiator_id" not in conversation_columns: connection.execute(text("ALTER TABLE conversations ADD COLUMN initiator_id INTEGER REFERENCES users(id)"))
         if conversation_columns and "recipient_id" not in conversation_columns: connection.execute(text("ALTER TABLE conversations ADD COLUMN recipient_id INTEGER REFERENCES users(id)"))
         message_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(chat_messages)"))}
         if message_columns and "sender_user_id" not in message_columns: connection.execute(text("ALTER TABLE chat_messages ADD COLUMN sender_user_id INTEGER REFERENCES users(id)"))
     with SessionLocal() as db: seed_database(db)
+    bootstrap_admin()
     yield
 
 app = FastAPI(title="某刻 API", version="0.2.0", lifespan=lifespan)
+app.include_router(admin_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost", "https://localhost", "capacitor://localhost", "http://localhost:5173", "http://127.0.0.1:5173"],
@@ -100,12 +106,13 @@ def moment_out(m: Moment) -> dict:
     return {"id":m.id,"location_id":m.location_id,"location_name":m.location.name,"author_alias":m.author_alias,"content":m.content,"image_url":m.image_url,"mood":m.mood,"created_at":m.created_at,"resonance_count":len(m.resonances),"echo_count":len(m.echoes),"is_official":m.is_official}
 
 def location_out(p: Location, cutoff: datetime) -> dict:
-    today_moments = [m for m in p.moments if m.created_at >= cutoff]
+    visible_moments = [m for m in p.moments if not m.is_hidden]
+    today_moments = [m for m in visible_moments if m.created_at >= cutoff]
     today_interactions = len(today_moments) + sum(len(m.resonances) + len(m.echoes) for m in today_moments)
-    return {"id":p.id,"name":p.name,"short_name":p.short_name,"description":p.description,"prompt":p.prompt,"mood":p.mood,"accent":p.accent,"category":p.category,"x":p.x,"y":p.y,"latitude":p.latitude,"longitude":p.longitude,"moment_count":len(p.moments),"today_count":len(today_moments),"today_interaction_count":today_interactions}
+    return {"id":p.id,"name":p.name,"short_name":p.short_name,"description":p.description,"prompt":p.prompt,"mood":p.mood,"accent":p.accent,"category":p.category,"x":p.x,"y":p.y,"latitude":p.latitude,"longitude":p.longitude,"moment_count":len(visible_moments),"today_count":len(today_moments),"today_interaction_count":today_interactions}
 
 def load_moments(db: Session, location_id: int | None = None) -> list[Moment]:
-    query = select(Moment).options(selectinload(Moment.location),selectinload(Moment.resonances),selectinload(Moment.echoes)).order_by(Moment.created_at.desc())
+    query = select(Moment).options(selectinload(Moment.location),selectinload(Moment.resonances),selectinload(Moment.echoes)).where(Moment.is_hidden.is_(False)).order_by(Moment.created_at.desc())
     if location_id is not None: query = query.where(Moment.location_id == location_id)
     return list(db.scalars(query))
 
@@ -116,7 +123,12 @@ def peer_presence(conversation: Conversation, viewer: User, db: Session) -> dict
     if peer.last_latitude is None or peer.last_longitude is None: return None
     places = db.scalars(select(Location)).all()
     nearest = min(places, key=lambda p: (p.latitude-peer.last_latitude)**2 + (p.longitude-peer.last_longitude)**2, default=None)
-    return {"label": f"{nearest.short_name}附近" if nearest else "校园内", "updated_at": peer.last_position_at}
+    return {
+        "label": f"{nearest.short_name}附近" if nearest else "校园内",
+        "updated_at": peer.last_position_at,
+        "latitude": peer.last_latitude,
+        "longitude": peer.last_longitude,
+    }
 
 def conversation_out(conversation: Conversation, viewer: User, db: Session) -> dict:
     last = conversation.messages[-1].content if conversation.messages else "还没有消息"
@@ -127,6 +139,107 @@ def conversation_out(conversation: Conversation, viewer: User, db: Session) -> d
 def message_out(message: ChatMessage, viewer: User) -> dict:
     sender = "me" if message.sender_user_id == viewer.id else "peer"
     return {"id": message.id, "conversation_id": message.conversation_id, "sender": sender, "content": message.content, "created_at": message.created_at}
+
+def collect_style_texts(user: User, db: Session, limit: int = 36) -> list[str]:
+    moments = db.scalars(select(Moment.content).where(Moment.user_id == user.id, Moment.content != "").order_by(Moment.created_at.desc()).limit(limit)).all()
+    messages = db.scalars(select(ChatMessage.content).where(ChatMessage.sender_user_id == user.id).order_by(ChatMessage.created_at.desc()).limit(limit)).all()
+    feedback = db.scalars(select(SuggestionFeedback.final_text).where(SuggestionFeedback.user_id == user.id).order_by(SuggestionFeedback.created_at.desc()).limit(12)).all()
+    combined = [str(value).strip() for value in [*feedback, *messages, *moments] if value and str(value).strip()]
+    return list(dict.fromkeys(combined))[:limit]
+
+def build_style_profile(user: User, db: Session) -> dict:
+    texts = collect_style_texts(user, db)
+    avg_length = round(sum(len(text) for text in texts) / len(texts)) if texts else 18
+    endings = [text.rstrip()[-1] for text in texts if text.rstrip() and text.rstrip()[-1] in "。！？!?～~…"]
+    ending = Counter(endings).most_common(1)[0][0] if endings else ""
+    particles = [word for word in ["哈哈", "嘿嘿", "嗯嗯", "呀", "啦", "诶", "吧", "欸", "确实", "感觉"] if any(word in text for text in texts)]
+    newline_ratio = sum("\n" in text for text in texts) / len(texts) if texts else 0
+    emoji_ratio = sum(bool(re.search(r"[\U0001F300-\U0001FAFF]", text)) for text in texts) / len(texts) if texts else 0
+    habits = ["偏短句" if avg_length <= 28 else "偏完整句", "常换行" if newline_ratio >= .25 else "少换行"]
+    if ending: habits.append(f"常用“{ending}”")
+    if emoji_ratio >= .2: habits.append("会用表情")
+    if particles: habits.append("常用" + "、".join(particles[:3]))
+    return {
+        "sample_count": len(texts),
+        "ready": len(texts) >= 5,
+        "confidence": "稳定" if len(texts) >= 15 else "正在了解" if texts else "尚未开始",
+        "average_length": avg_length,
+        "preferred_ending": ending,
+        "habits": habits,
+        "summary": "，".join(habits),
+        "representative_samples": [text[:100] for text in texts[:6]],
+    }
+
+def call_chat_completion(api_url: str, api_key: str, model: str, prompt: str, image_path: Path | None = None, thinking: dict | None = None) -> str:
+    if image_path:
+        mime_by_suffix = {".jpg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
+        mime = mime_by_suffix.get(image_path.suffix.lower(), "application/octet-stream")
+        image_url = f"data:{mime};base64,{base64.b64encode(image_path.read_bytes()).decode('ascii')}"
+        content: object = [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": image_url, "detail": "low"}}]
+    else:
+        content = prompt
+    payload: dict = {
+        "model": model,
+        "messages": [{"role": "user", "content": content}],
+        "response_format": {"type": "json_object"},
+        "temperature": 0.65,
+        "max_tokens": 600,
+        "stream": False,
+    }
+    if thinking is not None:
+        payload["thinking"] = thinking
+    request = UrlRequest(api_url, data=json.dumps(payload).encode("utf-8"), headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, method="POST")
+    with urlopen(request, timeout=45) as response:
+        result = json.loads(response.read().decode("utf-8"))
+    choices = result.get("choices") or []
+    if not choices or not choices[0].get("message", {}).get("content"):
+        raise ValueError("Chat completion provider returned no content")
+    return str(choices[0]["message"]["content"]).strip()
+
+def call_deepseek(prompt: str) -> str | None:
+    api_key = os.getenv("DEEPSEEK_API_KEY")
+    if not api_key:
+        return None
+    return call_chat_completion(
+        os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/chat/completions"),
+        api_key,
+        os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+        prompt,
+        thinking={"type": "disabled"},
+    )
+
+def call_siliconflow_vision(prompt: str, image_path: Path) -> str | None:
+    api_key = os.getenv("SILICONFLOW_API_KEY")
+    if not api_key:
+        return None
+    return call_chat_completion(
+        os.getenv("SILICONFLOW_API_URL", "https://api.siliconflow.cn/v1/chat/completions"),
+        api_key,
+        os.getenv("SILICONFLOW_VISION_MODEL", "Qwen/Qwen3-VL-8B-Instruct"),
+        prompt,
+        image_path=image_path,
+    )
+
+def parse_three_choices(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw.strip().removeprefix("```json").removesuffix("```").strip())
+        rows = value.get("suggestions", value) if isinstance(value, dict) else value
+        if isinstance(rows, list):
+            result = [str(row.get("text", "") if isinstance(row, dict) else row).strip() for row in rows]
+            return [row[:500] for row in result if row][:3]
+    except (ValueError, TypeError):
+        pass
+    rows = [re.sub(r"^\s*(?:[-*]|\d+[.、)])\s*", "", row).strip() for row in raw.splitlines()]
+    return [row[:500] for row in rows if row][:3]
+
+def styled_fallback(text: str, profile: dict) -> str:
+    ending = profile["preferred_ending"]
+    value = text.rstrip("。！？!?～~…")
+    if ending:
+        return value + ending
+    return value
 
 @app.get("/health")
 def health(): return {"status":"ok","app":"某刻校园"}
@@ -215,7 +328,7 @@ def map_status():
     return {"service": "ok", "requests": dict(_map_request_counts), "cached_tiles": cached_tiles}
 
 def user_out(user: User) -> dict:
-    return {"id": user.id, "student_id": user.student_id, "email": user.email, "alias": user.alias, "share_location": user.share_location}
+    return {"id": user.id, "student_id": user.student_id, "email": user.email, "alias": user.alias, "share_location": user.share_location, "is_admin": user.is_admin}
 
 def normalized_student_id(value: str) -> str:
     return value.strip().upper()
@@ -271,7 +384,7 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
 @app.post("/api/auth/login")
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
     user = db.scalar(select(User).where(User.student_id == normalized_student_id(payload.student_id)))
-    if user is None or not verify_password(payload.password, user.password_hash):
+    if user is None or not user.is_active or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "学号或密码错误")
     return {"access_token": create_access_token(user,db), "token_type": "bearer", "user": user_out(user)}
 
@@ -357,6 +470,10 @@ def activity(user:Annotated[User,Depends(get_current_user)],db:Session=Depends(g
     rows=load_moments(db); mine=[m for m in rows if m.user_id==user.id]
     return {"alias":user.alias,"posted_count":len(mine),"resonance_given":0,"echoes_sent":0,"received_resonance":sum(len(m.resonances) for m in mine),"moments":[moment_out(m) for m in mine]}
 
+@app.get("/api/me/style-profile")
+def style_profile(user: Annotated[User, Depends(get_current_user)], db: Session = Depends(get_db)):
+    return build_style_profile(user, db)
+
 @app.post("/api/ai/expression-prompt")
 def expression_prompt(payload:PromptRequest,db:Session=Depends(get_db)):
     place=db.get(Location,payload.location_id)
@@ -366,7 +483,12 @@ def expression_prompt(payload:PromptRequest,db:Session=Depends(get_db)):
 
 @app.get("/api/ai/status")
 def ai_status():
-    return {"vision_configured": bool(os.getenv("MOUKE_VISION_API_URL") and os.getenv("MOUKE_VISION_API_KEY"))}
+    return {
+        "vision_configured": bool(os.getenv("SILICONFLOW_API_KEY") or (os.getenv("MOUKE_VISION_API_URL") and os.getenv("MOUKE_VISION_API_KEY"))),
+        "text_configured": bool(os.getenv("DEEPSEEK_API_KEY")),
+        "text_provider": "deepseek" if os.getenv("DEEPSEEK_API_KEY") else None,
+        "vision_provider": "siliconflow" if os.getenv("SILICONFLOW_API_KEY") else None,
+    }
 
 @app.post("/api/ai/image-caption")
 def image_caption(payload: ImageCaptionRequest, user: Annotated[User, Depends(get_current_user)], db: Session = Depends(get_db)):
@@ -374,26 +496,75 @@ def image_caption(payload: ImageCaptionRequest, user: Annotated[User, Depends(ge
     path = UPLOAD_DIR / Path(payload.image_url).name
     if place is None: raise HTTPException(404, "地点不存在")
     if not payload.image_url.startswith("/api/uploads/") or not path.is_file(): raise HTTPException(400, "请先上传图片")
-    provider_url = os.getenv("MOUKE_VISION_API_URL")
-    provider_key = os.getenv("MOUKE_VISION_API_KEY")
-    if not provider_url or not provider_key:
-        return {"caption": f"在{place.short_name}，镜头替我记住了这一刻。", "mode": "template", "vision_used": False}
-    mime_by_suffix = {".jpg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
-    body = json.dumps({
-        "model": os.getenv("MOUKE_VISION_MODEL", "default"),
-        "image_base64": base64.b64encode(path.read_bytes()).decode("ascii"),
-        "mime_type": mime_by_suffix.get(path.suffix.lower(), "application/octet-stream"),
-        "prompt": f"请根据图片写一句自然、有趣、不过度暴露隐私的校园动态文案。地点：{place.name}。语气：{payload.tone}。不超过60个汉字。",
-    }).encode("utf-8")
+    profile = build_style_profile(user, db)
+    examples = "\n".join(f"- {sample}" for sample in profile["representative_samples"]) or "- 暂无历史表达"
+    prompt = f"""你是校园社交产品的文案副驾驶。看图后生成三条不同的中文动态文案，只返回 JSON：{{\"suggestions\":[\"...\",\"...\",\"...\"]}}。
+地点：{place.name}
+用户写作形式：{profile['summary']}，通常约 {profile['average_length']} 字。
+本人代表句：
+{examples}
+要求：第一条最像本人，第二条稍微润色，第三条换一种感觉；每条不超过60字；只模仿语言形式，不推断身份或性格；不得暴露人脸、证件、宿舍号等隐私。"""
     try:
-        req = UrlRequest(provider_url, data=body, headers={"Authorization": f"Bearer {provider_key}", "Content-Type": "application/json", "User-Agent": MAP_USER_AGENT}, method="POST")
-        with urlopen(req, timeout=45) as response:
-            result = json.loads(response.read().decode("utf-8"))
-        caption = str(result.get("caption", "")).strip()
-        if not caption: raise ValueError("Vision provider returned no caption")
-        return {"caption": caption[:280], "mode": "vision", "vision_used": True}
+        choices = parse_three_choices(call_siliconflow_vision(prompt, path))
+        provider_url = os.getenv("MOUKE_VISION_API_URL")
+        provider_key = os.getenv("MOUKE_VISION_API_KEY")
+        if not choices and provider_url and provider_key:
+            mime_by_suffix = {".jpg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
+            body = json.dumps({"model": os.getenv("MOUKE_VISION_MODEL", "default"), "image_base64": base64.b64encode(path.read_bytes()).decode("ascii"), "mime_type": mime_by_suffix.get(path.suffix.lower(), "application/octet-stream"), "prompt": prompt}).encode("utf-8")
+            req = UrlRequest(provider_url, data=body, headers={"Authorization": f"Bearer {provider_key}", "Content-Type": "application/json", "User-Agent": MAP_USER_AGENT}, method="POST")
+            with urlopen(req, timeout=45) as response:
+                result = json.loads(response.read().decode("utf-8"))
+            choices = parse_three_choices(result.get("caption", ""))
+        if choices:
+            while len(choices) < 3: choices.append(choices[-1])
+            return {"caption": choices[0][:280], "captions": choices[:3], "mode": "vision", "vision_used": True, "style_profile": profile}
     except Exception as exc:
-        raise HTTPException(502, "图片理解服务暂时不可用") from exc
+        if os.getenv("MOUKE_AI_STRICT", "0") == "1":
+            raise HTTPException(502, "图片理解服务暂时不可用") from exc
+    choices = [
+        styled_fallback(f"在{place.short_name}，镜头替我记住了这一刻", profile),
+        styled_fallback(f"今天路过{place.short_name}，刚好遇见这一幕", profile),
+        styled_fallback(f"普通的一天，也有值得存下来的画面", profile),
+    ]
+    return {"caption": choices[0], "captions": choices, "mode": "template", "vision_used": False, "style_profile": profile}
+
+@app.post("/api/ai/reply-suggestions")
+def reply_suggestions(payload: ReplySuggestionRequest, user: Annotated[User, Depends(get_current_user)], db: Session = Depends(get_db)):
+    row = db.scalar(select(Conversation).options(selectinload(Conversation.messages)).where(Conversation.id == payload.conversation_id, Conversation.is_blocked.is_(False), or_(Conversation.initiator_id == user.id, Conversation.recipient_id == user.id)))
+    if row is None: raise HTTPException(404, "会话不存在")
+    profile = build_style_profile(user, db)
+    recent = row.messages[-12:]
+    dialogue = "\n".join(f"{'我' if message.sender_user_id == user.id else '对方'}：{message.content}" for message in recent)
+    examples = "\n".join(f"- {sample}" for sample in profile["representative_samples"]) or "- 暂无历史表达，保持自然简短"
+    prompt = f"""你是匿名校园聊天里的表达副驾驶。根据当前对话，为“我”生成三条可编辑的中文回复，只返回 JSON：{{\"suggestions\":[\"...\",\"...\",\"...\"]}}。
+对话起点：{row.origin_excerpt}
+最近对话：
+{dialogue}
+我的写作形式：{profile['summary']}，通常约 {profile['average_length']} 字。
+我的代表句：
+{examples}
+要求：第一条自然接住，第二条继续话题，第三条温柔克制；三条意思明显不同；符合聊天阶段；不冒充用户作承诺，不编造事实，不索要或泄露隐私；只模仿语言形式，不推断人格；每条不超过80字。"""
+    ai_used = False
+    try:
+        choices = parse_three_choices(call_deepseek(prompt))
+        ai_used = len(choices) >= 3
+    except Exception as exc:
+        if os.getenv("MOUKE_AI_STRICT", "0") == "1":
+            raise HTTPException(502, "回复建议暂时不可用") from exc
+        choices = []
+    if len(choices) < 3:
+        latest_peer = next((message.content for message in reversed(recent) if message.sender_user_id != user.id), "")
+        natural = "可以呀，我也有点这种感觉" if "?" in latest_peer or "？" in latest_peer else "嗯嗯，我懂你说的"
+        fallback = [natural, "那你当时是怎么想的呀", "谢谢你愿意和我说这些"]
+        choices = [styled_fallback(text, profile) for text in fallback]
+    labels = [("自然接住", "natural"), ("继续话题", "continue"), ("温柔克制", "gentle")]
+    return {"suggestions": [{"label": label, "intent": intent, "text": choices[index][:80]} for index, (label, intent) in enumerate(labels)], "style_profile": profile, "ai_used": ai_used}
+
+@app.post("/api/ai/suggestion-feedback", status_code=201)
+def suggestion_feedback(payload: SuggestionFeedbackCreate, user: Annotated[User, Depends(get_current_user)], db: Session = Depends(get_db)):
+    row = SuggestionFeedback(user_id=user.id, context_type=payload.context_type, suggestion=payload.suggestion.strip(), final_text=payload.final_text.strip(), selected_rank=payload.selected_rank)
+    db.add(row); db.commit()
+    return {"recorded": True}
 
 @app.get("/api/conversations")
 def conversations(user:Annotated[User,Depends(get_current_user)],db: Session = Depends(get_db)):

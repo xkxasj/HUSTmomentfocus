@@ -8,6 +8,7 @@ export const router = createRouter({
     { path: '/map', name: 'map', component: () => import('../views/MapView.vue') },
     { path: '/chat', name: 'chat', component: () => import('../views/ChatView.vue') },
     { path: '/me', name: 'profile', component: () => import('../views/ProfileView.vue') },
+    { path: '/admin', name: 'admin', component: () => import('../views/AdminView.vue') },
     { path: '/:pathMatch(.*)*', redirect: '/map' },
   ],
 })

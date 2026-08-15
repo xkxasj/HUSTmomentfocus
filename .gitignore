@@ -2,6 +2,8 @@
 frontend/node_modules/
 backend/.deps/
 backend/.venv/
+backend/.venv-runtime/
+backend/.venv-repaired/
 **/__pycache__/
 *.py[cod]
 

@@ -56,7 +56,12 @@ export type Conversation = {
   last_message: string
   updated_at: string
   unread_count: number
-  peer_presence: { label: string; updated_at: string } | null
+  peer_presence: {
+    label: string
+    updated_at: string
+    latitude: number
+    longitude: number
+  } | null
 }
 
 export type UserProfile = {
@@ -65,6 +70,35 @@ export type UserProfile = {
   email: string
   alias: string
   share_location: boolean
+  is_admin: boolean
+}
+
+export type AdminOverview = {
+  generated_at: string
+  users: { total: number; new_today: number; dau: number; wau: number; mau: number }
+  content: { moments_today: number; messages_today: number; conversations_today: number }
+  sessions: { count_30d: number; average_minutes: number | null; median_minutes: number | null }
+  retention: { days: number; eligible: number; retained: number; rate: number | null }[]
+  chat: { conversations_30d: number; replied_conversations_30d: number; reply_rate: number | null; median_first_reply_minutes: number | null }
+  daily: { date: string; new_users: number; active_users: number; messages: number }[]
+}
+
+export type AdminUser = UserProfile & {
+  is_active: boolean
+  created_at: string
+  last_seen_at: string | null
+  moment_count: number
+  message_count: number
+}
+
+export type AdminMoment = {
+  id: number
+  author_alias: string
+  content: string
+  image_url: string | null
+  location_name: string
+  created_at: string
+  is_hidden: boolean
 }
 
 export type AuthResponse = {
@@ -79,4 +113,21 @@ export type ChatMessage = {
   sender: 'me' | 'peer'
   content: string
   created_at: string
+}
+
+export type StyleProfile = {
+  sample_count: number
+  ready: boolean
+  confidence: '稳定' | '正在了解' | '尚未开始'
+  average_length: number
+  preferred_ending: string
+  habits: string[]
+  summary: string
+  representative_samples: string[]
+}
+
+export type ReplySuggestion = {
+  label: string
+  intent: 'natural' | 'continue' | 'gentle'
+  text: string
 }
