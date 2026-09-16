@@ -12,6 +12,7 @@ const app = useCampusApp()
 const startupMessageIndex = ref(0)
 let startupMessageTimer: number | undefined
 let analyticsTimer: number | undefined
+let conversationTimer: number | undefined
 let activeSeconds = 0
 const isAdminRoute = computed(() => route.name === 'admin')
 
@@ -44,6 +45,9 @@ const trackCurrentPage = () => {
 
 onMounted(() => {
   app.initialize()
+  conversationTimer = window.setInterval(() => {
+    if (document.visibilityState === 'visible') void app.refreshConversations()
+  }, 5000)
   analyticsTimer = window.setInterval(() => {
     if (!app.currentUser.value || app.currentUser.value.is_admin || document.visibilityState !== 'visible') return
     activeSeconds += 30
@@ -60,6 +64,7 @@ watch(() => route.fullPath, trackCurrentPage)
 onBeforeUnmount(() => {
   stopStartupMessages()
   window.clearInterval(analyticsTimer)
+  window.clearInterval(conversationTimer)
   if (app.currentUser.value && !app.currentUser.value.is_admin && activeSeconds) trackProductEvent('session_ping', route.path, activeSeconds, true)
 })
 </script>

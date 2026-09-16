@@ -2,7 +2,7 @@
 import { useRouter } from 'vue-router'
 import { api } from '../api'
 import { useCampusApp } from '../composables/useCampusApp'
-import type { Moment } from '../types'
+import MomentActions from '../components/MomentActions.vue'
 
 const router = useRouter()
 const app = useCampusApp()
@@ -12,9 +12,6 @@ const showLocation = (id: number) => {
   void router.push({ name: 'map' })
 }
 
-const replyPrivately = async (moment: Moment) => {
-  if (await app.openChatFromMoment(moment)) await router.push({ name: 'chat' })
-}
 </script>
 
 <template>
@@ -43,9 +40,11 @@ const replyPrivately = async (moment: Moment) => {
           <span class="place-link">◎ {{ moment.location_name }}</span>
           <img v-if="moment.image_url" class="moment-image" :src="api.mediaUrl(moment.image_url)" alt="校园片段图片" loading="lazy">
           <p v-if="moment.content">{{ moment.content }}</p>
-          <footer><span>{{ moment.author_alias }}</span><span class="moment-card-actions"><span>共鸣 {{ moment.resonance_count }}</span><button @click.stop="replyPrivately(moment)">私下回应</button></span></footer>
+          <footer><span>{{ moment.author_alias }}</span></footer>
+          <MomentActions :moment="moment" />
         </article>
       </div>
+      <button v-if="app.hasMoreMoments.value" class="ghost-button" :disabled="app.moreLoading.value" @click="app.loadMoreMoments">{{ app.moreLoading.value ? '正在加载…' : '加载更多片段' }}</button>
     </section>
   </section>
 </template>

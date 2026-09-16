@@ -1,4 +1,5 @@
 import type { Activity, AdminMoment, AdminOverview, AdminUser, AuthResponse, ChatMessage, Conversation, FeedData, Location, Moment, ReplySuggestion, StyleProfile, UserProfile } from './types'
+import type { AdminReport, BlockedUser, Interactions, ReportTarget } from './types'
 
 const DEFAULT_API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, '') ?? ''
 const API_BASE_KEY = 'mouke_api_base'
@@ -67,7 +68,7 @@ export const api = {
   me: () => request('/api/auth/me').then(json<UserProfile>),
   updatePrivacy: (shareLocation: boolean) => request('/api/me/privacy', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ share_location: shareLocation }) }).then(json<UserProfile>),
   updatePosition: (latitude: number, longitude: number) => request('/api/me/position', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ latitude, longitude }) }).then(json<{ updated: boolean; shared: boolean }>),
-  feed: () => fetchWithTimeout(endpoint('/api/feed')).then(json<FeedData>),
+  feed: (offset = 0) => fetchWithTimeout(endpoint(`/api/feed?offset=${offset}`)).then(json<FeedData>),
   locations: () => fetchWithTimeout(endpoint('/api/locations')).then(json<Location[]>),
   moments: (locationId: number) => fetchWithTimeout(endpoint(`/api/locations/${locationId}/moments`)).then(json<Moment[]>),
   activity: () => request('/api/me/activity').then(json<Activity>),
@@ -92,4 +93,17 @@ export const api = {
   updateAdminUserStatus: (userId: number, isActive: boolean) => request(`/api/admin/users/${userId}/status`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_active: isActive }) }).then(json<{ updated: boolean; is_active: boolean }>),
   adminMoments: () => request('/api/admin/moments').then(json<AdminMoment[]>),
   updateAdminMomentVisibility: (momentId: number, isHidden: boolean) => request(`/api/admin/moments/${momentId}/visibility`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_hidden: isHidden }) }).then(json<{ updated: boolean; is_hidden: boolean }>),
+  revokeSession: () => request('/api/auth/logout', { method: 'POST' }).then(json<{ logged_out: boolean }>),
+  interactions: (id: number) => request(`/api/moments/${id}/interactions`).then(json<Interactions>),
+  resonate: (id: number, kind: string) => request(`/api/moments/${id}/resonances`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind }) }).then(json<{ resonance_count: number; my_resonance: string }>),
+  removeResonance: (id: number) => request(`/api/moments/${id}/resonances`, { method: 'DELETE' }).then(json<{ resonance_count: number; my_resonance: null }>),
+  echo: (id: number, content: string) => request(`/api/moments/${id}/echoes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }) }).then(json<{ echo_count: number }>),
+  decideConversation: (id: number, action: 'accept' | 'reject' | 'close') => request(`/api/conversations/${id}/decision`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) }).then(json<{ status: string }>),
+  markRead: (id: number, messageId: number) => request(`/api/conversations/${id}/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message_id: messageId }) }).then(json<{ read: boolean }>),
+  blockConversation: (id: number) => request(`/api/conversations/${id}/block`, { method: 'POST' }).then(json<{ blocked: boolean }>),
+  blocks: () => request('/api/me/blocks').then(json<BlockedUser[]>),
+  unblock: (id: number) => request(`/api/me/blocks/${id}`, { method: 'DELETE' }).then(json<{ unblocked: boolean }>),
+  report: (targetType: ReportTarget, targetId: number, reason: string) => request('/api/reports', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target_type: targetType, target_id: targetId, reason }) }).then(json<{ reported: boolean }>),
+  adminReports: () => request('/api/admin/reports').then(json<AdminReport[]>),
+  resolveReport: (id: number, action: 'dismiss' | 'hide' | 'close', note: string) => request(`/api/admin/reports/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, note }) }).then(json<{ status: string }>),
 }

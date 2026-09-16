@@ -32,6 +32,7 @@ export type Moment = {
 }
 
 export type FeedData = {
+  has_more: boolean
   greeting: string
   campus_pulse: string
   locations: Location[]
@@ -48,6 +49,9 @@ export type Activity = {
 }
 
 export type Conversation = {
+  status: 'pending' | 'active' | 'rejected' | 'closed' | 'expired' | 'blocked'
+  is_recipient: boolean
+  expires_at: string | null
   id: number
   peer_alias: string
   origin_moment_id: number | null
@@ -130,4 +134,13 @@ export type ReplySuggestion = {
   label: string
   intent: 'natural' | 'continue' | 'gentle'
   text: string
+}
+
+export type Echo = { id: number; content: string; author_alias: string; created_at: string }
+export type Interactions = { my_resonance: string | null; resonance_count: number; echoes: Echo[] }
+export type BlockedUser = { id: number; alias: string; created_at: string }
+export type ReportTarget = 'moment' | 'echo' | 'conversation'
+export type AdminReport = {
+  id: number; target_type: ReportTarget; target_id: number; reason: string; evidence: string
+  status: 'pending' | 'resolved' | 'dismissed'; resolution: string; created_at: string
 }

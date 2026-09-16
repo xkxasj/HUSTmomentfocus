@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .database import Base
 
@@ -70,8 +70,10 @@ class Moment(Base):
 
 class Resonance(Base):
     __tablename__ = "resonances"
+    __table_args__ = (UniqueConstraint("moment_id", "user_id"),)
     id: Mapped[int] = mapped_column(primary_key=True)
     moment_id: Mapped[int] = mapped_column(ForeignKey("moments.id"), index=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     kind: Mapped[str] = mapped_column(String(20))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
@@ -79,6 +81,8 @@ class Echo(Base):
     __tablename__ = "echoes"
     id: Mapped[int] = mapped_column(primary_key=True)
     moment_id: Mapped[int] = mapped_column(ForeignKey("moments.id"), index=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    is_hidden: Mapped[bool] = mapped_column(Boolean, default=False)
     content: Mapped[str] = mapped_column(String(80))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
@@ -93,6 +97,10 @@ class Conversation(Base):
     location_name: Mapped[str] = mapped_column(String(80), default="校园")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
     is_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    initiator_read_id: Mapped[int] = mapped_column(Integer, default=0)
+    recipient_read_id: Mapped[int] = mapped_column(Integer, default=0)
     messages: Mapped[list["ChatMessage"]] = relationship(cascade="all, delete-orphan", order_by="ChatMessage.created_at")
 
 class ChatMessage(Base):
@@ -103,6 +111,30 @@ class ChatMessage(Base):
     sender: Mapped[str] = mapped_column(String(10))
     content: Mapped[str] = mapped_column(String(500))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
+
+
+class UserBlock(Base):
+    __tablename__ = "user_blocks"
+    __table_args__ = (UniqueConstraint("blocker_id", "blocked_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    blocker_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    blocked_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class Report(Base):
+    __tablename__ = "reports"
+    __table_args__ = (UniqueConstraint("reporter_id", "target_type", "target_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    reporter_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    target_type: Mapped[str] = mapped_column(String(20))
+    target_id: Mapped[int] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(String(300))
+    evidence: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    resolution: Mapped[str] = mapped_column(String(300), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 class SuggestionFeedback(Base):
     __tablename__ = "suggestion_feedback"

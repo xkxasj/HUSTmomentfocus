@@ -83,3 +83,22 @@ class AdminUserStatusUpdate(BaseModel):
 
 class AdminMomentVisibilityUpdate(BaseModel):
     is_hidden: bool
+
+
+class ConversationDecision(BaseModel):
+    action: str = Field(pattern="^(accept|reject|close)$")
+
+
+class ConversationRead(BaseModel):
+    message_id: int = Field(ge=0)
+
+
+class ReportCreate(BaseModel):
+    target_type: str = Field(pattern="^(moment|echo|conversation)$")
+    target_id: int = Field(gt=0)
+    reason: str = Field(min_length=2, max_length=300)
+
+
+class ReportResolution(BaseModel):
+    action: str = Field(pattern="^(dismiss|hide|close)$")
+    note: str = Field(min_length=2, max_length=300)

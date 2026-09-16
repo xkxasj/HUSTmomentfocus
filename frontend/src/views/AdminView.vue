@@ -3,10 +3,14 @@ import { computed, onMounted, ref } from 'vue'
 import { api } from '../api'
 import { useCampusApp } from '../composables/useCampusApp'
 import type { AdminMoment, AdminOverview, AdminUser } from '../types'
+import type { AdminReport } from '../types'
 import { maskEmail, maskStudentId } from '../utils/privacy'
 
 const app = useCampusApp()
-const tab = ref<'overview' | 'users' | 'moments'>('overview')
+const tab = ref<'overview' | 'users' | 'moments' | 'reports'>('overview')
+const reports = ref<AdminReport[]>([])
+const notes = ref<Record<number, string>>({})
+const resolving = ref<number | null>(null)
 const overview = ref<AdminOverview | null>(null)
 const users = ref<AdminUser[]>([])
 const moments = ref<AdminMoment[]>([])
@@ -23,7 +27,8 @@ const load = async () => {
   loading.value = true
   error.value = ''
   try {
-    const [overviewResult, usersResult, momentsResult] = await Promise.all([api.adminOverview(), api.adminUsers(), api.adminMoments()])
+    const [overviewResult, usersResult, momentsResult, reportsResult] = await Promise.all([api.adminOverview(), api.adminUsers(), api.adminMoments(), api.adminReports()])
+    reports.value = reportsResult
     overview.value = overviewResult
     users.value = usersResult
     moments.value = momentsResult
@@ -48,12 +53,21 @@ const toggleMoment = async (moment: AdminMoment) => {
 }
 
 onMounted(load)
+const resolve = async (report: AdminReport, action: 'dismiss' | 'hide' | 'close') => {
+  const note = notes.value[report.id]?.trim() || ''
+  if (note.length < 2) { app.notify('请填写至少 2 字的处理说明'); return }
+  if (resolving.value !== null) return
+  resolving.value = report.id
+  try { await api.resolveReport(report.id, action, note); await load() }
+  catch (cause) { app.notify(cause instanceof Error ? cause.message : '处理失败') }
+  finally { resolving.value = null }
+}
 </script>
 
 <template>
   <section class="admin-page">
     <header class="admin-hero">
-      <div><p class="eyebrow">MOMENT CONTROL</p><h1>某刻管理后台</h1><p>只看运营所需的汇总数据，不展示私人聊天正文。</p></div>
+      <div><p class="eyebrow">MOMENT CONTROL</p><h1>某刻管理后台</h1><p>运营数据以汇总展示；只有用户主动举报的会话会附带最近 20 条消息作为处理依据。</p></div>
       <button class="ghost-button" @click="$router.push({ name: 'profile' })">返回普通页面</button>
     </header>
 
@@ -64,6 +78,7 @@ onMounted(load)
         <button :class="{ active: tab === 'overview' }" @click="tab = 'overview'">数据概览</button>
         <button :class="{ active: tab === 'users' }" @click="tab = 'users'">用户管理</button>
         <button :class="{ active: tab === 'moments' }" @click="tab = 'moments'">内容管理</button>
+        <button :class="{ active: tab === 'reports' }" @click="tab = 'reports'">举报处理 {{ reports.filter(r => r.status === 'pending').length }}</button>
       </nav>
 
       <div v-if="tab === 'overview'" class="admin-stack">
@@ -104,9 +119,22 @@ onMounted(load)
         </tbody></table></div>
       </section>
 
-      <section v-else class="admin-panel admin-table-panel">
+      <section v-else-if="tab === 'moments'" class="admin-panel admin-table-panel">
         <div class="panel-title"><div><p class="eyebrow">最近 500 条</p><h2>公开内容管理</h2></div><span>隐藏后普通用户不可见，可随时恢复</span></div>
         <div class="moment-admin-list"><article v-for="moment in moments" :key="moment.id" :class="{ hidden: moment.is_hidden }"><div><span>{{ moment.location_name }} · {{ moment.author_alias }}</span><p>{{ moment.content || '［仅图片］' }}</p><small>{{ displayDate(moment.created_at) }}</small></div><img v-if="moment.image_url" :src="api.mediaUrl(moment.image_url)" alt="内容图片"><button class="status-button" :class="{ danger: !moment.is_hidden }" @click="toggleMoment(moment)">{{ moment.is_hidden ? '恢复' : '隐藏' }}</button></article></div>
+      </section>
+      <section v-else class="admin-panel">
+        <h2>举报处理</h2><p v-if="!reports.length">暂无举报。</p>
+        <article v-for="report in reports" :key="report.id" class="report-row">
+          <strong>{{ { moment: '公开片段', echo: '公开回声', conversation: '会话' }[report.target_type] }} #{{ report.target_id }} · {{ { pending: '待处理', resolved: '已处理', dismissed: '已驳回' }[report.status] }}</strong>
+          <p>举报原因：{{ report.reason }}</p>
+          <details><summary>查看举报证据</summary><pre>{{ report.evidence }}</pre></details>
+          <template v-if="report.status === 'pending'">
+            <label>处理说明<input v-model="notes[report.id]" maxlength="300" placeholder="填写处理依据"></label>
+            <div class="social-actions"><button :disabled="resolving !== null" @click="resolve(report, report.target_type === 'conversation' ? 'close' : 'hide')">{{ report.target_type === 'conversation' ? '结束会话并结案' : '隐藏内容并结案' }}</button><button :disabled="resolving !== null" @click="resolve(report, 'dismiss')">驳回举报</button></div>
+          </template>
+          <p v-else>处理说明：{{ report.resolution }}</p>
+        </article>
       </section>
     </template>
   </section>

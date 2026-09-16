@@ -12,15 +12,18 @@ from urllib.parse import quote
 from urllib.request import Request as UrlRequest, urlopen
 from datetime import datetime, timedelta
 from typing import Annotated
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import func, or_, select, text
+from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.dialects.sqlite import insert
 from .database import Base, SessionLocal, engine, get_db
 from .auth import create_access_token, get_current_user, hash_code, hash_password, make_alias, send_verification_email, verify_password
 from .admin import bootstrap_admin, router as admin_router
-from .models import ChatMessage, Conversation, Echo, Location, Moment, Resonance, SuggestionFeedback, User, VerificationCode
+from .models import AuthSession, ChatMessage, Conversation, Echo, Location, Moment, Resonance, SuggestionFeedback, User, UserBlock, VerificationCode
+from .social import blocked_pair, conversation_state, get_conversation, privacy_note, public_text, visible_moment, router as social_router
+from .social_migrations import migrate_social
 from .schemas import ConversationCreate, EchoCreate, ImageCaptionRequest, LoginRequest, MessageCreate, MomentCreate, MomentOut, PositionUpdate, PrivacyUpdate, PromptRequest, RegisterRequest, ReplySuggestionRequest, ResonanceCreate, SuggestionFeedbackCreate, VerificationRequest
 from .seed import seed_database
 
@@ -70,6 +73,7 @@ def ensure_map_source() -> dict:
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(engine)
     with engine.begin() as connection:
+        migrate_social(connection)
         columns = {row[1] for row in connection.execute(text("PRAGMA table_info(locations)"))}
         if "latitude" not in columns: connection.execute(text("ALTER TABLE locations ADD COLUMN latitude FLOAT DEFAULT 30.5134"))
         if "longitude" not in columns: connection.execute(text("ALTER TABLE locations ADD COLUMN longitude FLOAT DEFAULT 114.4162"))
@@ -91,6 +95,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="某刻 API", version="0.2.0", lifespan=lifespan)
 app.include_router(admin_router)
+app.include_router(social_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost", "https://localhost", "capacitor://localhost", "http://localhost:5173", "http://127.0.0.1:5173"],
@@ -103,12 +108,12 @@ def root():
     return RedirectResponse(url="/docs")
 
 def moment_out(m: Moment) -> dict:
-    return {"id":m.id,"location_id":m.location_id,"location_name":m.location.name,"author_alias":m.author_alias,"content":m.content,"image_url":m.image_url,"mood":m.mood,"created_at":m.created_at,"resonance_count":len(m.resonances),"echo_count":len(m.echoes),"is_official":m.is_official}
+    return {"id":m.id,"location_id":m.location_id,"location_name":m.location.name,"author_alias":m.author_alias,"content":m.content,"image_url":m.image_url,"mood":m.mood,"created_at":m.created_at,"resonance_count":len(m.resonances),"echo_count":sum(not e.is_hidden for e in m.echoes),"is_official":m.is_official}
 
 def location_out(p: Location, cutoff: datetime) -> dict:
     visible_moments = [m for m in p.moments if not m.is_hidden]
     today_moments = [m for m in visible_moments if m.created_at >= cutoff]
-    today_interactions = len(today_moments) + sum(len(m.resonances) + len(m.echoes) for m in today_moments)
+    today_interactions = len(today_moments) + sum(sum(r.created_at >= cutoff for r in m.resonances) + sum(not e.is_hidden and e.created_at >= cutoff for e in m.echoes) for m in visible_moments)
     return {"id":p.id,"name":p.name,"short_name":p.short_name,"description":p.description,"prompt":p.prompt,"mood":p.mood,"accent":p.accent,"category":p.category,"x":p.x,"y":p.y,"latitude":p.latitude,"longitude":p.longitude,"moment_count":len(visible_moments),"today_count":len(today_moments),"today_interaction_count":today_interactions}
 
 def load_moments(db: Session, location_id: int | None = None) -> list[Moment]:
@@ -117,9 +122,10 @@ def load_moments(db: Session, location_id: int | None = None) -> list[Moment]:
     return list(db.scalars(query))
 
 def peer_presence(conversation: Conversation, viewer: User, db: Session) -> dict | None:
+    if conversation_state(conversation) != "active": return None
     peer_id = conversation.recipient_id if conversation.initiator_id == viewer.id else conversation.initiator_id
     peer = db.get(User, peer_id) if peer_id else None
-    if not peer or not peer.share_location or not peer.last_position_at or peer.last_position_at < datetime.now() - timedelta(minutes=30): return None
+    if not peer or not peer.is_active or blocked_pair(db, viewer.id, peer_id) or not peer.share_location or not peer.last_position_at or peer.last_position_at < datetime.now() - timedelta(minutes=30): return None
     if peer.last_latitude is None or peer.last_longitude is None: return None
     places = db.scalars(select(Location)).all()
     nearest = min(places, key=lambda p: (p.latitude-peer.last_latitude)**2 + (p.longitude-peer.last_longitude)**2, default=None)
@@ -134,7 +140,9 @@ def conversation_out(conversation: Conversation, viewer: User, db: Session) -> d
     last = conversation.messages[-1].content if conversation.messages else "还没有消息"
     peer_id = conversation.recipient_id if conversation.initiator_id == viewer.id else conversation.initiator_id
     peer = db.get(User, peer_id) if peer_id else None
-    return {"id": conversation.id, "peer_alias": peer.alias if peer else conversation.peer_alias, "origin_moment_id": conversation.origin_moment_id, "origin_excerpt": conversation.origin_excerpt, "location_name": conversation.location_name, "last_message": last, "updated_at": conversation.updated_at, "unread_count": 0, "peer_presence": peer_presence(conversation, viewer, db)}
+    read_id = conversation.initiator_read_id if conversation.initiator_id == viewer.id else conversation.recipient_read_id
+    unread = sum(m.id > read_id and m.sender_user_id != viewer.id for m in conversation.messages)
+    return {"id": conversation.id, "peer_alias": peer.alias if peer else conversation.peer_alias, "origin_moment_id": conversation.origin_moment_id, "origin_excerpt": conversation.origin_excerpt, "location_name": conversation.location_name, "last_message": last, "updated_at": conversation.updated_at, "unread_count": unread, "peer_presence": peer_presence(conversation, viewer, db), "status": conversation_state(conversation), "is_recipient": conversation.recipient_id == viewer.id, "expires_at": conversation.expires_at}
 
 def message_out(message: ChatMessage, viewer: User) -> dict:
     sender = "me" if message.sender_user_id == viewer.id else "peer"
@@ -392,6 +400,14 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
 def auth_me(user: Annotated[User, Depends(get_current_user)]):
     return user_out(user)
 
+@app.post("/api/auth/logout")
+def logout_session(request: Request, user: Annotated[User, Depends(get_current_user)], db: Session = Depends(get_db)):
+    token = request.headers.get("authorization", "").split(" ", 1)[-1]
+    session = db.scalar(select(AuthSession).where(AuthSession.token_hash == hashlib.sha256(token.encode()).hexdigest(), AuthSession.user_id == user.id))
+    if session: db.delete(session)
+    db.commit()
+    return {"logged_out": True}
+
 @app.patch("/api/me/privacy")
 def update_privacy(payload: PrivacyUpdate, user: Annotated[User, Depends(get_current_user)], db: Session = Depends(get_db)):
     user.share_location = payload.share_location; db.commit()
@@ -405,7 +421,7 @@ def update_position(payload: PositionUpdate, user: Annotated[User, Depends(get_c
 @app.get("/api/locations")
 def locations(db: Session = Depends(get_db)):
     rows=db.scalars(select(Location).options(selectinload(Location.moments).selectinload(Moment.resonances), selectinload(Location.moments).selectinload(Moment.echoes)).order_by(Location.id)).all()
-    result = sorted([location_out(row,datetime.now()-timedelta(days=1)) for row in rows], key=lambda item: (-item["today_interaction_count"], item["id"]))
+    result = sorted([location_out(row,datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)) for row in rows], key=lambda item: (-item["today_interaction_count"], item["id"]))
     for rank, item in enumerate(result, start=1): item["today_rank"] = rank
     return result
 
@@ -415,19 +431,24 @@ def location_moments(location_id:int,db:Session=Depends(get_db)):
     return [moment_out(row) for row in load_moments(db,location_id)]
 
 @app.get("/api/feed")
-def feed(db:Session=Depends(get_db)):
-    places=locations(db); rows=load_moments(db)[:8]; moods=Counter(m.mood for m in rows if not m.is_official)
-    return {"greeting":"晚上好","campus_pulse":"今晚的校园正在谈论："+("、".join(m for m,_ in moods.most_common(3)) or "平静"),"locations":places,"moments":[moment_out(row) for row in rows]}
+def feed(db:Session=Depends(get_db), offset: int = Query(0, ge=0), limit: int = Query(20, ge=1, le=100)):
+    places=locations(db)
+    rows = list(db.scalars(select(Moment).options(selectinload(Moment.location), selectinload(Moment.resonances), selectinload(Moment.echoes)).where(Moment.is_hidden.is_(False)).order_by(Moment.created_at.desc(), Moment.id.desc()).offset(offset).limit(limit + 1)))
+    more = len(rows) > limit
+    rows = rows[:limit]
+    moods=Counter(m.mood for m in rows if not m.is_official)
+    return {"greeting":"你好","campus_pulse":"校园正在谈论："+("、".join(m for m,_ in moods.most_common(3)) or "平静"),"locations":places,"moments":[moment_out(row) for row in rows], "has_more": more}
 
 @app.post("/api/moments",response_model=MomentOut,status_code=201)
 def create_moment(payload:MomentCreate,user:Annotated[User,Depends(get_current_user)],db:Session=Depends(get_db)):
     if db.get(Location,payload.location_id) is None: raise HTTPException(404,"地点不存在")
-    content = payload.content.strip()
+    content = public_text(payload.content, allow_empty=True)
     if not content and not payload.image_url: raise HTTPException(400,"文字和图片至少保留一项")
     if payload.image_url and (not payload.image_url.startswith("/api/uploads/") or not (UPLOAD_DIR / Path(payload.image_url).name).is_file()):
         raise HTTPException(400,"图片不存在或尚未上传")
     m=Moment(location_id=payload.location_id,user_id=user.id,author_alias=user.alias,content=content,image_url=payload.image_url,mood=payload.mood); db.add(m); db.commit()
-    return moment_out(load_moments(db,payload.location_id)[0])
+    db.refresh(m)
+    return moment_out(m)
 
 @app.post("/api/uploads/images", status_code=201)
 async def upload_image(request: Request, user: Annotated[User, Depends(get_current_user)]):
@@ -455,20 +476,41 @@ def uploaded_image(filename: str):
 
 @app.post("/api/moments/{moment_id}/resonances")
 def create_resonance(moment_id:int,payload:ResonanceCreate,user:Annotated[User,Depends(get_current_user)],db:Session=Depends(get_db)):
-    if db.get(Moment,moment_id) is None: raise HTTPException(404,"片段不存在")
-    db.add(Resonance(moment_id=moment_id,kind=payload.kind)); db.commit()
-    return {"resonance_count":db.scalar(select(func.count()).select_from(Resonance).where(Resonance.moment_id==moment_id))}
+    moment = visible_moment(db, moment_id)
+    if blocked_pair(db, user.id, moment.user_id): raise HTTPException(403, "无法与此用户互动")
+    db.execute(insert(Resonance).values(moment_id=moment_id,user_id=user.id,kind=payload.kind).on_conflict_do_update(index_elements=["moment_id", "user_id"], set_={"kind": payload.kind}))
+    db.commit()
+    return {"resonance_count":db.scalar(select(func.count()).select_from(Resonance).where(Resonance.moment_id==moment_id)), "my_resonance": payload.kind}
+
+@app.delete("/api/moments/{moment_id}/resonances")
+def remove_resonance(moment_id:int,user:Annotated[User,Depends(get_current_user)],db:Session=Depends(get_db)):
+    visible_moment(db, moment_id)
+    row = db.scalar(select(Resonance).where(Resonance.moment_id == moment_id, Resonance.user_id == user.id))
+    if row: db.delete(row)
+    db.commit()
+    return {"resonance_count":db.scalar(select(func.count()).select_from(Resonance).where(Resonance.moment_id==moment_id)), "my_resonance": None}
+
+@app.get("/api/moments/{moment_id}/interactions")
+def moment_interactions(moment_id:int,user:Annotated[User,Depends(get_current_user)],db:Session=Depends(get_db)):
+    moment = visible_moment(db, moment_id)
+    mine = db.scalar(select(Resonance).where(Resonance.moment_id == moment_id, Resonance.user_id == user.id))
+    echoes = db.execute(select(Echo, User.alias).outerjoin(User, User.id == Echo.user_id).where(Echo.moment_id == moment_id, Echo.is_hidden.is_(False)).order_by(Echo.created_at, Echo.id)).all()
+    return {"my_resonance": mine.kind if mine else None, "resonance_count": len(moment.resonances),
+            "echoes": [{"id": e.id, "content": e.content, "author_alias": alias or "匿名同学", "created_at": e.created_at} for e, alias in echoes]}
 
 @app.post("/api/moments/{moment_id}/echoes")
 def create_echo(moment_id:int,payload:EchoCreate,user:Annotated[User,Depends(get_current_user)],db:Session=Depends(get_db)):
-    if db.get(Moment,moment_id) is None: raise HTTPException(404,"片段不存在")
-    db.add(Echo(moment_id=moment_id,content=payload.content.strip())); db.commit()
-    return {"echo_count":db.scalar(select(func.count()).select_from(Echo).where(Echo.moment_id==moment_id))}
+    moment = visible_moment(db, moment_id)
+    if blocked_pair(db, user.id, moment.user_id): raise HTTPException(403, "无法与此用户互动")
+    db.add(Echo(moment_id=moment_id,user_id=user.id,content=public_text(payload.content))); db.commit()
+    return {"echo_count":db.scalar(select(func.count()).select_from(Echo).where(Echo.moment_id==moment_id, Echo.is_hidden.is_(False)))}
 
 @app.get("/api/me/activity")
 def activity(user:Annotated[User,Depends(get_current_user)],db:Session=Depends(get_db)):
     rows=load_moments(db); mine=[m for m in rows if m.user_id==user.id]
-    return {"alias":user.alias,"posted_count":len(mine),"resonance_given":0,"echoes_sent":0,"received_resonance":sum(len(m.resonances) for m in mine),"moments":[moment_out(m) for m in mine]}
+    given = db.scalar(select(func.count()).select_from(Resonance).join(Moment).where(Resonance.user_id == user.id, Moment.is_hidden.is_(False)))
+    sent = db.scalar(select(func.count()).select_from(Echo).join(Moment).where(Echo.user_id == user.id, Echo.is_hidden.is_(False), Moment.is_hidden.is_(False)))
+    return {"alias":user.alias,"posted_count":len(mine),"resonance_given":given,"echoes_sent":sent,"received_resonance":sum(len(m.resonances) for m in mine),"moments":[moment_out(m) for m in mine]}
 
 @app.get("/api/me/style-profile")
 def style_profile(user: Annotated[User, Depends(get_current_user)], db: Session = Depends(get_db)):
@@ -478,8 +520,7 @@ def style_profile(user: Annotated[User, Depends(get_current_user)], db: Session 
 def expression_prompt(payload:PromptRequest,db:Session=Depends(get_db)):
     place=db.get(Location,payload.location_id)
     if place is None: raise HTTPException(404,"地点不存在")
-    sensitive=["宿舍号","手机号","身份证","老师姓名","班级群"]
-    return {"prompt":place.prompt,"privacy_note":"这段话可能包含可识别身份的信息。" if any(w in payload.draft for w in sensitive) else None}
+    return {"prompt":place.prompt,"privacy_note":privacy_note(payload.draft)}
 
 @app.get("/api/ai/status")
 def ai_status():
@@ -530,8 +571,7 @@ def image_caption(payload: ImageCaptionRequest, user: Annotated[User, Depends(ge
 
 @app.post("/api/ai/reply-suggestions")
 def reply_suggestions(payload: ReplySuggestionRequest, user: Annotated[User, Depends(get_current_user)], db: Session = Depends(get_db)):
-    row = db.scalar(select(Conversation).options(selectinload(Conversation.messages)).where(Conversation.id == payload.conversation_id, Conversation.is_blocked.is_(False), or_(Conversation.initiator_id == user.id, Conversation.recipient_id == user.id)))
-    if row is None: raise HTTPException(404, "会话不存在")
+    row = get_conversation(db, payload.conversation_id, user, writable=True)
     profile = build_style_profile(user, db)
     recent = row.messages[-12:]
     dialogue = "\n".join(f"{'我' if message.sender_user_id == user.id else '对方'}：{message.content}" for message in recent)
@@ -569,17 +609,21 @@ def suggestion_feedback(payload: SuggestionFeedbackCreate, user: Annotated[User,
 @app.get("/api/conversations")
 def conversations(user:Annotated[User,Depends(get_current_user)],db: Session = Depends(get_db)):
     rows = db.scalars(select(Conversation).options(selectinload(Conversation.messages)).where(Conversation.is_blocked.is_(False), or_(Conversation.initiator_id == user.id, Conversation.recipient_id == user.id)).order_by(Conversation.updated_at.desc())).all()
-    return [conversation_out(row,user,db) for row in rows]
+    return [conversation_out(row,user,db) for row in rows if not blocked_pair(db, user.id, row.recipient_id if row.initiator_id == user.id else row.initiator_id)]
 
 @app.post("/api/conversations", status_code=201)
 def start_conversation(payload: ConversationCreate, user:Annotated[User,Depends(get_current_user)],db: Session = Depends(get_db)):
     moment = db.scalar(select(Moment).options(selectinload(Moment.location)).where(Moment.id == payload.moment_id))
-    if moment is None: raise HTTPException(404, "片段不存在")
+    if moment is None or moment.is_hidden: raise HTTPException(404, "片段不存在")
     if moment.user_id is None: raise HTTPException(409,"该片段来自旧版匿名数据，无法发起实名账户会话")
     if moment.user_id == user.id: raise HTTPException(400,"不能向自己发起回声")
-    existing = db.scalar(select(Conversation).options(selectinload(Conversation.messages)).where(Conversation.origin_moment_id == moment.id, Conversation.initiator_id == user.id))
-    if existing is not None: return conversation_out(existing,user,db)
-    row = Conversation(initiator_id=user.id,recipient_id=moment.user_id,peer_alias=moment.author_alias,origin_moment_id=moment.id, origin_excerpt=moment.content[:160], location_name=moment.location.name)
+    peer = db.get(User, moment.user_id)
+    if not peer or not peer.is_active or blocked_pair(db, user.id, moment.user_id): raise HTTPException(403, "无法向此用户发起会话")
+    existing = db.scalar(select(Conversation).options(selectinload(Conversation.messages)).where(Conversation.origin_moment_id == moment.id, or_((Conversation.initiator_id == user.id) & (Conversation.recipient_id == moment.user_id), (Conversation.recipient_id == user.id) & (Conversation.initiator_id == moment.user_id))).order_by(Conversation.id.desc()))
+    if existing is not None:
+        if conversation_state(existing) in ("pending", "active"): return conversation_out(existing,user,db)
+        raise HTTPException(409, "这条片段的会话已经结束，请从新的片段开始")
+    row = Conversation(initiator_id=user.id,recipient_id=moment.user_id,peer_alias=moment.author_alias,origin_moment_id=moment.id, origin_excerpt=moment.content[:160], location_name=moment.location.name, status="pending", expires_at=datetime.now() + timedelta(hours=24))
     db.add(row); db.flush()
     db.add(ChatMessage(conversation_id=row.id,sender_user_id=user.id,sender="me",content="我想回应你留在这里的这一刻。"))
     db.commit()
@@ -588,21 +632,32 @@ def start_conversation(payload: ConversationCreate, user:Annotated[User,Depends(
 
 @app.get("/api/conversations/{conversation_id}/messages")
 def conversation_messages(conversation_id: int,user:Annotated[User,Depends(get_current_user)],db: Session = Depends(get_db)):
-    row = db.scalar(select(Conversation).options(selectinload(Conversation.messages)).where(Conversation.id == conversation_id,Conversation.is_blocked.is_(False),or_(Conversation.initiator_id == user.id,Conversation.recipient_id == user.id)))
-    if row is None: raise HTTPException(404, "会话不存在")
+    row = get_conversation(db, conversation_id, user)
     return [message_out(message,user) for message in row.messages]
 
 @app.post("/api/conversations/{conversation_id}/messages", status_code=201)
 def send_message(conversation_id: int,payload: MessageCreate,user:Annotated[User,Depends(get_current_user)],db: Session = Depends(get_db)):
-    row = db.get(Conversation, conversation_id)
-    if row is None or row.is_blocked or user.id not in (row.initiator_id,row.recipient_id): raise HTTPException(404, "会话不存在")
+    row = get_conversation(db, conversation_id, user, writable=True)
+    if not payload.content.strip(): raise HTTPException(400, "消息不能为空")
+    now = datetime.now()
+    # Recheck under the SQLite write transaction so a concurrent close / block
+    # cannot be followed by a send based on a stale earlier read.
+    result = db.execute(update(Conversation).where(Conversation.id == row.id,
+        Conversation.status == "active", Conversation.is_blocked.is_(False),
+        Conversation.expires_at > now).values(updated_at=now))
+    if not result.rowcount: raise HTTPException(409, "会话已经结束或已到期")
     message = ChatMessage(conversation_id=conversation_id,sender_user_id=user.id,sender="me",content=payload.content.strip())
-    row.updated_at = datetime.now(); db.add(message); db.commit(); db.refresh(message)
+    db.add(message); db.commit(); db.refresh(message)
     return message_out(message,user)
 
 @app.post("/api/conversations/{conversation_id}/block")
 def block_conversation(conversation_id: int,user:Annotated[User,Depends(get_current_user)],db: Session = Depends(get_db)):
     row = db.get(Conversation, conversation_id)
     if row is None or user.id not in (row.initiator_id,row.recipient_id): raise HTTPException(404, "会话不存在")
-    row.is_blocked = True; db.commit()
+    peer_id = row.recipient_id if row.initiator_id == user.id else row.initiator_id
+    if peer_id is None: raise HTTPException(400, "此旧版会话没有可屏蔽的用户")
+    db.execute(insert(UserBlock).values(blocker_id=user.id, blocked_id=peer_id).on_conflict_do_nothing(index_elements=["blocker_id", "blocked_id"]))
+    related = db.scalars(select(Conversation).where(or_((Conversation.initiator_id == user.id) & (Conversation.recipient_id == peer_id), (Conversation.initiator_id == peer_id) & (Conversation.recipient_id == user.id))))
+    for item in related: item.status = "closed"
+    db.commit()
     return {"blocked": True}
