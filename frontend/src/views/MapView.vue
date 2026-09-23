@@ -2,6 +2,7 @@
 import RealCampusMap from '../components/RealCampusMap.vue'
 import { api } from '../api'
 import { useCampusApp } from '../composables/useCampusApp'
+import MomentActions from '../components/MomentActions.vue'
 
 const app = useCampusApp()
 </script>
@@ -18,8 +19,10 @@ const app = useCampusApp()
     <aside v-if="app.selected.value" class="place-sheet">
       <div class="place-title"><span class="place-swatch" :style="{ background: app.selected.value.accent }"></span><div><p class="eyebrow">{{ app.selected.value.mood }} · 今天 {{ app.selected.value.today_count }} 条</p><h2>{{ app.selected.value.name }}</h2><p>{{ app.selected.value.description }}</p></div></div>
       <button class="primary-button" @click="app.composeOpen.value = true">＋ 留下某刻</button>
-      <div v-if="app.placeMoments.value.length" class="place-moments">
-        <article v-for="moment in app.placeMoments.value" :key="moment.id"><img v-if="moment.image_url" class="place-moment-image" :src="api.mediaUrl(moment.image_url)" alt="校园片段图片" loading="lazy"><p v-if="moment.content">{{ moment.content }}</p><span>{{ moment.author_alias }} · 共鸣 {{ moment.resonance_count }}</span></article>
+      <p v-if="app.locationLoading.value">正在加载地点动态…</p>
+      <p v-else-if="app.locationError.value" role="alert">{{ app.locationError.value }} <button @click="app.loadLocationMoments">重试</button></p>
+      <div v-else-if="app.placeMoments.value.length" class="place-moments">
+        <article v-for="moment in app.placeMoments.value" :key="moment.id"><img v-if="moment.image_url" class="place-moment-image" :src="api.mediaUrl(moment.image_url)" alt="校园片段图片" loading="lazy"><p v-if="moment.content">{{ moment.content }}</p><span>{{ moment.author_alias }}</span><MomentActions :moment="moment" /></article>
       </div>
       <div v-else class="quiet-place"><strong>这里暂时很安静</strong><span>{{ app.selected.value.prompt }}</span></div>
     </aside>

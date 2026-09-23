@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue'
 import { api } from '../api'
 import { trackProductEvent } from '../analytics'
-import type { ChatMessage, Conversation, Location, Moment, ReplySuggestion, StyleProfile, UserProfile } from '../types'
+import type { Activity, ChatMessage, Conversation, Location, Moment, ReplySuggestion, StyleProfile, UserProfile } from '../types'
 
 const selectedId = ref(1)
 const composeOpen = ref(false)
@@ -31,13 +31,27 @@ const authError = ref('')
 const currentUser = ref<UserProfile | null>(null)
 const locations = ref<Location[]>([])
 const moments = ref<Moment[]>([])
+const locationMoments = ref<Moment[]>([])
+const locationError = ref('')
+const locationLoading = ref(false)
+const hasMoreMoments = ref(false)
+const moreLoading = ref(false)
+const activity = ref<Activity | null>(null)
+const chatError = ref('')
+const messagesLoading = ref(false)
+const sendingMessage = ref(false)
+const chatVisible = ref(false)
+let sessionGeneration = 0
+let chatRequest = 0
+let feedOffset = 0
+let conversationRefresh: Promise<void> | null = null
 let initialized = false
 let toastTimer: number | undefined
 let positionWatchId: number | undefined
 let lastPositionUploadAt = 0
 
 const selected = computed(() => locations.value.find(item => item.id === selectedId.value) ?? locations.value[0])
-const placeMoments = computed(() => moments.value.filter(item => item.location_id === selected.value?.id))
+const placeMoments = computed(() => locationMoments.value)
 const activeConversation = computed(() => conversations.value.find(item => item.id === activeConversationId.value) ?? null)
 const todayMomentCount = computed(() => locations.value.reduce((total, item) => total + item.today_count, 0))
 const todayInteractionCount = computed(() => locations.value.reduce((total, item) => total + item.today_interaction_count, 0))
@@ -52,7 +66,43 @@ const notify = (message: string) => {
   toastTimer = window.setTimeout(() => (toast.value = ''), 2200)
 }
 
-const selectLocation = (id: number) => { selectedId.value = id }
+const selectLocation = (id: number) => { selectedId.value = id; void loadLocationMoments() }
+const loadLocationMoments = async () => {
+  const id = selectedId.value
+  const generation = sessionGeneration
+  locationLoading.value = true
+  locationError.value = ''
+  locationMoments.value = []
+  try {
+    const rows = await api.moments(id)
+    if (generation === sessionGeneration && id === selectedId.value) locationMoments.value = rows
+  } catch (cause) { if (generation === sessionGeneration && id === selectedId.value) locationError.value = cause instanceof Error ? cause.message : '地点动态加载失败' }
+  finally { if (generation === sessionGeneration && id === selectedId.value) locationLoading.value = false }
+}
+const refreshLocations = async () => {
+  const generation = sessionGeneration
+  try { const rows = await api.locations(); if (generation === sessionGeneration) locations.value = rows } catch { /* 保留上次统计 */ }
+}
+const refreshActivity = async () => { activity.value = await api.activity() }
+const syncMomentCounts = (id: number, resonanceCount: number, echoCount: number) => {
+  for (const row of [...moments.value, ...locationMoments.value, ...(activity.value?.moments ?? [])]) {
+    if (row.id === id) { row.resonance_count = resonanceCount; row.echo_count = echoCount }
+  }
+}
+const loadMoreMoments = async () => {
+  if (moreLoading.value || !hasMoreMoments.value) return
+  moreLoading.value = true
+  const generation = sessionGeneration
+  try {
+    const result = await api.feed(feedOffset)
+    if (generation !== sessionGeneration) return
+    const ids = new Set(moments.value.map(m => m.id))
+    moments.value.push(...result.moments.filter(m => !ids.has(m.id)))
+    feedOffset += result.moments.length
+    hasMoreMoments.value = result.has_more
+  } catch (cause) { notify(cause instanceof Error ? cause.message : '加载失败') }
+  finally { moreLoading.value = false }
+}
 const retryData = () => { void loadAppData() }
 
 const publish = async () => {
@@ -64,6 +114,9 @@ const publish = async () => {
     const imageUrl = selectedImage.value ? await ensureImageUploaded() : null
     const created = await api.createMoment({ location_id: selected.value.id, content: draft.value.trim(), mood: '此刻', image_url: imageUrl })
     moments.value.unshift(created)
+    feedOffset += 1
+    if (created.location_id === selectedId.value) locationMoments.value.unshift(created)
+    void refreshLocations()
     trackProductEvent('moment_published', '/moments')
     if (selectedCaptionIndex.value !== null) void api.suggestionFeedback('caption', captionSuggestions.value[selectedCaptionIndex.value] || '', draft.value.trim(), selectedCaptionIndex.value + 1)
   } catch (cause) {
@@ -134,20 +187,49 @@ const selectCaptionSuggestion = (index: number) => {
 }
 
 const openConversation = async (conversation: Conversation) => {
+  chatRequest += 1
   activeConversationId.value = conversation.id
+  chatMessages.value = []
   messageDraft.value = ''
   replyComposerExpanded.value = false
   replySuggestions.value = []
   selectedReplyIndex.value = null
   selectedReplyText.value = ''
-  try { chatMessages.value = await api.conversationMessages(conversation.id) } catch { chatMessages.value = [] }
+  await refreshMessages()
+}
+
+const refreshMessages = async () => {
+  const id = activeConversationId.value
+  if (!id) return
+  const requestId = ++chatRequest
+  const generation = sessionGeneration
+  messagesLoading.value = true
+  try {
+    const messages = await api.conversationMessages(id)
+    if (generation !== sessionGeneration || requestId !== chatRequest || activeConversationId.value !== id) return
+    // Preserve a local send completed while this fetch was in flight.
+    const merged = new Map([...chatMessages.value, ...messages].map(message => [message.id, message]))
+    chatMessages.value = [...merged.values()].sort((a, b) => a.id - b.id)
+    chatError.value = ''
+    if (chatVisible.value && document.visibilityState === 'visible' && messages.length) {
+      await api.markRead(id, messages[messages.length - 1]!.id)
+      if (generation === sessionGeneration && activeConversationId.value === id) {
+        const row = conversations.value.find(c => c.id === id)
+        if (row) row.unread_count = 0
+      }
+    }
+  } catch (cause) { if (requestId === chatRequest && generation === sessionGeneration) chatError.value = cause instanceof Error ? cause.message : '消息加载失败，请重试' }
+  finally { if (requestId === chatRequest) messagesLoading.value = false }
 }
 
 const loadReplySuggestions = async (force = false) => {
-  if (!activeConversation.value || replySuggestionsLoading.value || (replySuggestions.value.length && !force)) return
+  if (!activeConversation.value || activeConversation.value.status !== 'active' || replySuggestionsLoading.value || (replySuggestions.value.length && !force)) return
+  const id = activeConversation.value.id
+  const generation = sessionGeneration
   replySuggestionsLoading.value = true
   try {
-    const result = await api.replySuggestions(activeConversation.value.id)
+    const result = await api.replySuggestions(id)
+    if (generation !== sessionGeneration || activeConversationId.value !== id) return
     replySuggestions.value = result.suggestions
     styleProfile.value = result.style_profile
   } catch (cause) {
@@ -171,18 +253,27 @@ const selectReplySuggestion = (index: number) => {
 }
 
 const refreshConversations = async () => {
-  try {
-    const refreshed = await api.conversations()
-    conversations.value = refreshed
-    if (activeConversationId.value && !refreshed.some(item => item.id === activeConversationId.value)) {
-      activeConversationId.value = null
-      chatMessages.value = []
-    }
-  } catch { /* 保留当前会话，下一次自动刷新时重试 */ }
+  if (!currentUser.value) return
+  if (conversationRefresh) return conversationRefresh
+  const generation = sessionGeneration
+  conversationRefresh = (async () => {
+    try {
+      const refreshed = await api.conversations()
+      if (generation !== sessionGeneration) return
+      conversations.value = refreshed
+      chatError.value = ''
+      if (activeConversationId.value && !refreshed.some(item => item.id === activeConversationId.value)) {
+        activeConversationId.value = null
+        chatMessages.value = []
+        chatRequest += 1
+      }
+    } catch { if (generation === sessionGeneration) chatError.value = '会话刷新失败，正在等待重连；也可以手动重试。' }
+  })()
+  try { await conversationRefresh } finally { conversationRefresh = null }
 }
 
 const openChatFromMoment = async (moment: Moment) => {
-  let conversation = conversations.value.find(item => item.origin_moment_id === moment.id)
+  let conversation = conversations.value.find(item => item.origin_moment_id === moment.id && ['pending', 'active'].includes(item.status))
   if (!conversation) {
     try { conversation = await api.startConversation(moment.id) }
     catch (cause) { notify(cause instanceof Error ? cause.message : '无法发起回声'); return false }
@@ -195,11 +286,17 @@ const openChatFromMoment = async (moment: Moment) => {
 
 const sendChatMessage = async () => {
   const content = messageDraft.value.trim()
-  if (!content || !activeConversation.value) return
+  if (!content || !activeConversation.value || activeConversation.value.status !== 'active' || sendingMessage.value) return
+  const id = activeConversation.value.id
+  const generation = sessionGeneration
+  sendingMessage.value = true
   let message: ChatMessage
-  try { message = await api.sendMessage(activeConversation.value.id, content) }
+  try { message = await api.sendMessage(id, content) }
   catch (cause) { notify(cause instanceof Error ? cause.message : '发送失败'); return }
-  chatMessages.value.push(message)
+  finally { sendingMessage.value = false }
+  if (generation !== sessionGeneration) return
+  if (activeConversationId.value !== id) { void refreshConversations(); return }
+  if (!chatMessages.value.some(m => m.id === message.id)) chatMessages.value.push(message)
   trackProductEvent('message_sent', '/chat')
   activeConversation.value.last_message = content
   activeConversation.value.updated_at = message.created_at
@@ -212,14 +309,19 @@ const sendChatMessage = async () => {
 }
 
 const loadAppData = async () => {
+  const generation = sessionGeneration
   dataLoading.value = true
   dataError.value = ''
-  void api.styleProfile().then(profile => { styleProfile.value = profile }).catch(() => { /* 不影响核心内容加载 */ })
+  void api.styleProfile().then(profile => { if (generation === sessionGeneration) styleProfile.value = profile }).catch(() => { /* 不影响核心内容加载 */ })
   try {
     const [feedResult, conversationsResult] = await Promise.allSettled([api.feed(), api.conversations()])
+    if (generation !== sessionGeneration) return
     if (feedResult.status === 'fulfilled') {
       locations.value = feedResult.value.locations
       moments.value = feedResult.value.moments
+      feedOffset = feedResult.value.moments.length
+      hasMoreMoments.value = feedResult.value.has_more
+      void loadLocationMoments()
     }
     if (conversationsResult.status === 'fulfilled') {
       conversations.value = conversationsResult.value
@@ -231,18 +333,33 @@ const loadAppData = async () => {
 }
 
 const handleAuthenticated = (user: UserProfile) => {
+  sessionGeneration += 1
   currentUser.value = user
   if (user.share_location) startLocationWatch()
   void loadAppData()
 }
 
-const logout = () => {
+const logout = async () => {
+  try { await api.revokeSession() }
+  catch (cause) { if (!api.isUnauthorized(cause)) { notify('退出失败，请检查连接后重试'); return } }
+  sessionGeneration += 1
+  chatRequest += 1
   stopLocationWatch()
   api.logout()
   currentUser.value = null
   conversations.value = []
   moments.value = []
   locations.value = []
+  locationMoments.value = []
+  activeConversationId.value = null
+  chatMessages.value = []
+  messageDraft.value = ''
+  draft.value = ''
+  composeOpen.value = false
+  activity.value = null
+  styleProfile.value = null
+  replySuggestions.value = []
+  clearSelectedImage()
 }
 
 function stopLocationWatch() {
@@ -329,6 +446,9 @@ const initialize = () => {
 const retryAuthentication = () => { void verifySession() }
 
 export const useCampusApp = () => ({
+  chatVisible,
+  locationError, locationLoading, hasMoreMoments, moreLoading, activity, chatError, messagesLoading, sendingMessage,
+  loadLocationMoments, refreshLocations, refreshActivity, syncMomentCounts, loadMoreMoments, refreshMessages,
   selectedId, composeOpen, draft, selectedImage, imagePreview, uploadedImageUrl, captionGenerating, captionSuggestions, selectedCaptionIndex, publishing, toast, conversations, activeConversationId,
   chatMessages, messageDraft, replySuggestions, replySuggestionsLoading, replyComposerExpanded, selectedReplyIndex, styleProfile, dataLoading, dataError, authLoading, authError, currentUser,
   locations, moments, selected, placeMoments, activeConversation,

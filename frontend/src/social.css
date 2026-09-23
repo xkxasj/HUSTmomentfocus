@@ -1,0 +1,33 @@
+.social-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0; }
+.social-actions button, .echo-row > button, .echo-form button { border: 1px solid #c8d6ca; border-radius: 14px; padding: 8px 12px; background: #f7faf6; color: #355b49; cursor: pointer; }
+.social-actions button.selected { background: #355b49; color: white; }
+.social-actions button:disabled, .echo-form button:disabled { opacity: .5; cursor: wait; }
+.echo-panel { border-top: 1px solid #dbe3d9; padding-top: 8px; }
+.echo-panel p { font-size: 14px; line-height: 1.6; margin: 8px 0; }
+.echo-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #e0e7dc; padding: 8px 0; }
+.echo-row > div { min-width: 0; overflow-wrap: anywhere; }
+.echo-row p { margin: 3px 0; }
+.echo-row small { color: #627465; }
+.echo-form { display: flex; gap: 8px; margin: 12px 0; }
+.echo-form input { width: 100%; min-width: 0; border: 1px solid #c8d6ca; padding: 10px; border-radius: 12px; background: white; }
+.conversation-tools, .conversation-status { padding: 12px 20px; background: #f0f5ed; }
+.conversation-status { font-size: 13px; line-height: 1.7; }
+.conversation-status p { margin: 5px 0; }
+.message-panel > .auth-error { padding: 10px 20px; }
+.activity-stats { display: flex; flex-wrap: wrap; gap: 16px; margin: 20px 0; }
+.activity-stats span { background: #eef4eb; border-radius: 14px; padding: 15px; }
+.activity-stats strong { font-size: 24px; margin-left: 8px; }
+.report-row { border-bottom: 1px solid #dbe3d9; padding: 20px 0; overflow-wrap: anywhere; }
+.report-row pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #f4f6f2; padding: 12px; font: inherit; }
+.report-row input { display: block; width: 100%; margin: 10px 0; border: 1px solid #c8d6ca; padding: 10px; border-radius: 10px; }
+.modal label { display: block; margin: 16px 0; }
+.moment-interactions { width: 100%; }
+.message-panel { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.message-head { min-height: 72px; flex-shrink: 0; }
+.message-stream { flex: 1; min-height: 100px; }
+.conversation-status, .conversation-tools, .reply-composer-collapsed { flex-shrink: 0; }
+.conversation-context { flex-shrink: 0; max-height: 210px; overflow-y: auto; }
+.place-moments article { display: block; padding: 16px 0; border-bottom: 1px solid #dbe3d9; }
+.place-moments .place-moment-image { width: 100%; max-width: 400px; height: 180px; margin-bottom: 12px; }
+.privacy-card > div { width: 100%; }
+@media (max-width: 600px) { .social-actions button { font-size: 12px; padding: 8px; } .conversation-status { padding: 12px; } }
