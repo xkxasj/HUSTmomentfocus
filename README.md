@@ -100,14 +100,15 @@ cd backend
 - 位置共享默认关闭，只有双方接受且仍有效的会话可见；位置超过 30 分钟失效。
 - 动态、公开回声、会话举报；管理员查看举报证据、隐藏内容或结束会话、填写处理说明和结案。会话举报会明确提示将最近 20 条消息提交给管理员，后台没有任意读取私人会话的接口。
 - 运营埋点、管理员统计、用户停用、内容隐藏与操作审计。
-- 图片文案与回复建议可接外部 AI；没有配置服务时退化为模板。隐私规则和图片格式校验不等于完整自动内容审核。
+- 图片文案与回复建议可接外部 AI；没有配置服务时退化为模板。
+- 公开内容经过本地词表把关（`backend/app/moderation.py`）：动态正文、心情、公开回声命中即拒绝发布，AI 生成的文案与回复命中即整批丢弃并退化为模板。**不在把关范围内**：私聊消息、举报理由、管理端处理说明、以及图片内容本身（`upload_image` 只校验魔数）。词表是少量无争议的种子词，正式上线前必须从合规渠道获取并人工审校；隐私规则和图片格式校验不等于完整自动内容审核。
 
 ## 验证与升级
 
 ```powershell
 cd backend
-.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+.\.venv-runtime\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv-runtime\Scripts\python.exe -m unittest discover -s tests -v
 cd ../frontend
 npm.cmd ci
 npm.cmd run typecheck
@@ -116,8 +117,10 @@ npm.cmd run build
 
 首次运行按前面的步骤创建虚拟环境。GitHub Actions 同样运行后端测试、前端类型检查和生产构建。
 
+测试分两层，改内容把关时先跑快的那个：`tests/test_moderation.py` 是纯函数测试，毫秒级、不碰数据库；其余文件走 `TestClient`，约 10 秒。加词表规则的做法见 `backend/app/moderation.py` 顶部的「加词的纪律」。
+
 启动时会自动补充旧数据库的互动归属、回声隐藏、邀请状态和已读字段，并建立举报和屏蔽表；升级前请备份 `backend/app/mouke.db` 及 `uploads/`。历史共鸣和回声没有用户归属，继续保留但不计入任何人的“送出”统计。迁移可重复运行，不会删除历史消息。
 
 ## 尚未包含
 
-语音录制与转写、年度回顾、毕业声音地图、系统推送、自动图文内容审核服务、密码找回、正式云部署和发布签名。当前适合局域网功能验证，图片仍保存在本地目录。
+语音录制与转写、年度回顾、毕业声音地图、系统推送、图片内容识别、外接自动审核服务与人工复核队列、密码找回、正式云部署和发布签名。当前适合局域网功能验证，图片仍保存在本地目录。

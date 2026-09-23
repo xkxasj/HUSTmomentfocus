@@ -1,13 +1,13 @@
 """Shared social permissions and the report / consent workflow."""
 from datetime import datetime, timedelta
 import json
-import re
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import Session, selectinload
 
+from . import moderation
 from .admin import audit, get_admin_user
 from .auth import get_current_user
 from .database import get_db
@@ -56,21 +56,37 @@ def visible_moment(db: Session, moment_id: int) -> Moment:
 
 
 def privacy_note(content: str) -> str | None:
-    # A deterministic warning, not a claim of comprehensive content moderation.
-    if re.search(r"(?<!\d)1[3-9]\d{9}(?!\d)|(?<!\d)\d{17}[\dXx](?!\w)|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", content) or any(
-        word in content for word in ("宿舍号", "手机号", "身份证", "老师姓名", "班级群")
-    ):
+    """A deterministic warning, not a claim of comprehensive content moderation.
+
+    规则本体住在 moderation.privacy_hit()，与 AI 输出的隐私闸门共用同一份实现，
+    避免两处正则漂移。
+
+    **这个函数永远只返回字符串，绝不抛异常。** /api/ai/expression-prompt 拿它给
+    用户「正在输入的草稿」做发布前提示，抛异常会让发布按钮直接失效。
+    """
+    if moderation.privacy_hit(content):
         return "内容可能包含手机号、邮箱或其他身份信息，请移除后再发布。"
     return None
 
 
 def public_text(content: str, allow_empty: bool = False) -> str:
+    """公开文本的唯一入口：空 → 隐私 → 违禁，都是硬拦截。
+
+    顺序有意如此：先隐私后违禁，于是同时命中两者的内容拿到的仍是历史上那条隐私
+    文案，老行为不变。
+
+    返回的始终是原始 `value`。moderation 内部的 NFKC 折叠只用于匹配，绝不能写回
+    或返回给用户 —— NFKC 是有损的（①→1、Ⅴ→V），那是静默的数据篡改。
+    """
     value = content.strip()
     if not value and not allow_empty:
         raise HTTPException(400, "内容不能为空")
     note = privacy_note(value)
     if note:
         raise HTTPException(400, note)
+    flag = moderation.screen(value)
+    if flag:
+        raise HTTPException(400, flag.message)
     return value
 
 
