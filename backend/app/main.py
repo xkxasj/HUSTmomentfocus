@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.dialects.sqlite import insert
-from . import moderation
+from . import moderation, ratelimit
 from .database import Base, SessionLocal, engine, get_db
 from .auth import create_access_token, get_current_user, hash_code, hash_password, make_alias, send_verification_email, verify_password
 from .admin import bootstrap_admin, router as admin_router
@@ -477,6 +477,7 @@ def feed(db:Session=Depends(get_db), offset: int = Query(0, ge=0), limit: int = 
 
 @app.post("/api/moments",response_model=MomentOut,status_code=201)
 def create_moment(payload:MomentCreate,user:Annotated[User,Depends(get_current_user)],db:Session=Depends(get_db)):
+    ratelimit.enforce(db, user.id, Moment, ratelimit.MOMENT)
     if db.get(Location,payload.location_id) is None: raise HTTPException(404,"地点不存在")
     content = public_text(payload.content, allow_empty=True)
     if not content and not payload.image_url: raise HTTPException(400,"文字和图片至少保留一项")
@@ -539,6 +540,7 @@ def moment_interactions(moment_id:int,user:Annotated[User,Depends(get_current_us
 
 @app.post("/api/moments/{moment_id}/echoes")
 def create_echo(moment_id:int,payload:EchoCreate,user:Annotated[User,Depends(get_current_user)],db:Session=Depends(get_db)):
+    ratelimit.enforce(db, user.id, Echo, ratelimit.ECHO)
     moment = visible_moment(db, moment_id)
     if blocked_pair(db, user.id, moment.user_id): raise HTTPException(403, "无法与此用户互动")
     db.add(Echo(moment_id=moment_id,user_id=user.id,content=public_text(payload.content))); db.commit()
@@ -649,6 +651,7 @@ def reply_suggestions(payload: ReplySuggestionRequest, user: Annotated[User, Dep
 
 @app.post("/api/ai/suggestion-feedback", status_code=201)
 def suggestion_feedback(payload: SuggestionFeedbackCreate, user: Annotated[User, Depends(get_current_user)], db: Session = Depends(get_db)):
+    ratelimit.enforce(db, user.id, SuggestionFeedback, ratelimit.SUGGESTION_FEEDBACK)
     row = SuggestionFeedback(user_id=user.id, context_type=payload.context_type, suggestion=payload.suggestion.strip(), final_text=payload.final_text.strip(), selected_rank=payload.selected_rank)
     db.add(row); db.commit()
     return {"recorded": True}
