@@ -4,6 +4,12 @@ const DEFAULT_API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.
 const API_BASE_KEY = 'mouke_api_base'
 const currentApiBase = () => (localStorage.getItem(API_BASE_KEY) || DEFAULT_API_BASE).replace(/\/$/, '')
 const endpoint = (path: string) => `${currentApiBase()}${path}`
+// MapLibre 用 new Request() 加载瓦片/字体，相对路径会抛 "Failed to parse URL"，
+// 所以地图资源必须用绝对地址（dev 时拼上页面 origin，由 Vite 代理转发）。
+const absoluteEndpoint = (path: string) => {
+  const base = currentApiBase()
+  return base ? `${base}${path}` : `${window.location.origin}${path}`
+}
 const TOKEN_KEY = 'mouke_access_token'
 const DEFAULT_TIMEOUT_MS = 8000
 
@@ -72,9 +78,9 @@ export const api = {
   moments: (locationId: number) => fetchWithTimeout(endpoint(`/api/locations/${locationId}/moments`)).then(json<Moment[]>),
   activity: () => request('/api/me/activity').then(json<Activity>),
   styleProfile: () => request('/api/me/style-profile').then(json<StyleProfile>),
-  mapStyleUrl: () => endpoint('/api/map/style.json'),
-  mapTileTemplate: () => endpoint('/api/map/tiles/{z}/{x}/{y}.pbf'),
-  mapFontTemplate: () => endpoint('/api/map/fonts/{fontstack}/{range}.pbf'),
+  mapStyleUrl: () => absoluteEndpoint('/api/map/style.json'),
+  mapTileTemplate: () => absoluteEndpoint('/api/map/tiles/{z}/{x}/{y}.pbf'),
+  mapFontTemplate: () => absoluteEndpoint('/api/map/fonts/{fontstack}/{range}.pbf'),
   mediaUrl: (path: string | null) => path ? endpoint(path) : '',
   uploadImage: (file: File) => request('/api/uploads/images', { method: 'POST', headers: { 'Content-Type': file.type }, body: file }, 30000).then(json<{ image_url: string; moderation: string }>),
   imageCaption: (imageUrl: string, locationId: number) => request('/api/ai/image-caption', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image_url: imageUrl, location_id: locationId, tone: '像本人' }) }, 45000).then(json<{ caption: string; captions: string[]; mode: 'vision' | 'template'; vision_used: boolean; style_profile: StyleProfile }>),
