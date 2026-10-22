@@ -65,6 +65,11 @@ class LoginRequest(BaseModel):
 class PrivacyUpdate(BaseModel):
     share_location: bool
 
+
+class AccountDeleteRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=128)
+    confirm: str = Field(pattern="^注销账号$")
+
 class PositionUpdate(BaseModel):
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)

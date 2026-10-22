@@ -4,13 +4,13 @@ import json
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import and_, or_, select, update
-from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import Session, selectinload
 
 from . import moderation
 from .admin import audit, get_admin_user
 from .auth import get_current_user
 from .database import get_db
+from .db_compat import insert
 from .models import ChatMessage, Conversation, Echo, Moment, Report, User, UserBlock
 from .schemas import ConversationDecision, ConversationRead, ReportCreate, ReportResolution
 

@@ -2,12 +2,16 @@ from collections import Counter
 from contextlib import asynccontextmanager
 import base64
 import hashlib
+import hmac
 import json
+import logging
 import os
 import re
 import secrets
 import smtplib
+import time
 import unicodedata
+import uuid
 from pathlib import Path
 from urllib.parse import quote
 from urllib.request import Request as UrlRequest, urlopen
@@ -16,23 +20,36 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import func, or_, select, text, update
+from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.orm import Session, selectinload
-from sqlalchemy.dialects.sqlite import insert
-from . import moderation, ratelimit
+from . import auth_security, moderation, ratelimit
 from .database import Base, SessionLocal, engine, get_db
-from .auth import create_access_token, get_current_user, hash_code, hash_password, make_alias, send_verification_email, verify_password
+from .db_compat import IS_SQLITE, insert
+from .auth import (
+    LOCK_MINUTES,
+    create_access_token,
+    get_current_user,
+    hash_code,
+    hash_password,
+    login_locked,
+    make_alias,
+    register_login_failure,
+    register_login_success,
+    send_verification_email,
+    validate_production_config,
+    verify_password,
+)
 from .admin import bootstrap_admin, router as admin_router
-from .models import AuthSession, ChatMessage, Conversation, Echo, Location, Moment, Resonance, SuggestionFeedback, User, UserBlock, VerificationCode
+from .models import AiUsage, AnalyticsEvent, AuthSession, ChatMessage, Conversation, Echo, Location, Moment, Report, Resonance, SuggestionFeedback, User, UserBlock, VerificationCode
 from .social import blocked_pair, conversation_state, get_conversation, privacy_note, public_text, visible_moment, router as social_router
 from .social_migrations import migrate_social
-from .schemas import ConversationCreate, EchoCreate, ImageCaptionRequest, LoginRequest, MessageCreate, MomentCreate, MomentOut, PositionUpdate, PrivacyUpdate, PromptRequest, RegisterRequest, ReplySuggestionRequest, ResonanceCreate, SuggestionFeedbackCreate, VerificationRequest
+from .schemas import AccountDeleteRequest, ConversationCreate, EchoCreate, ImageCaptionRequest, LoginRequest, MessageCreate, MomentCreate, MomentOut, PositionUpdate, PrivacyUpdate, PromptRequest, RegisterRequest, ReplySuggestionRequest, ResonanceCreate, SuggestionFeedbackCreate, VerificationRequest
 from .seed import seed_database
 
-UPLOAD_DIR = Path(__file__).resolve().parent / "uploads"
-UPLOAD_DIR.mkdir(exist_ok=True)
-MAP_CACHE_DIR = Path(__file__).resolve().parent / "map_cache"
-MAP_CACHE_DIR.mkdir(exist_ok=True)
+UPLOAD_DIR = Path(os.getenv("MOUKE_UPLOAD_DIR", Path(__file__).resolve().parent / "uploads"))
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+MAP_CACHE_DIR = Path(os.getenv("MOUKE_MAP_CACHE_DIR", Path(__file__).resolve().parent / "map_cache"))
+MAP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 MAP_STYLE_UPSTREAM = "https://tiles.openfreemap.org/styles/bright"
 MAP_SOURCE_UPSTREAM = "https://tiles.openfreemap.org/planet"
 MAP_USER_AGENT = "MoukeCampus/0.3 campus-map-proxy"
@@ -93,37 +110,119 @@ def ensure_map_source() -> dict:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    validate_production_config()
     Base.metadata.create_all(engine)
-    with engine.begin() as connection:
-        migrate_social(connection)
-        columns = {row[1] for row in connection.execute(text("PRAGMA table_info(locations)"))}
-        if "latitude" not in columns: connection.execute(text("ALTER TABLE locations ADD COLUMN latitude FLOAT DEFAULT 30.5134"))
-        if "longitude" not in columns: connection.execute(text("ALTER TABLE locations ADD COLUMN longitude FLOAT DEFAULT 114.4162"))
-        if "category" not in columns: connection.execute(text("ALTER TABLE locations ADD COLUMN category VARCHAR(20) DEFAULT 'landmark'"))
-        user_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(users)"))}
-        if user_columns and "is_admin" not in user_columns: connection.execute(text("ALTER TABLE users ADD COLUMN is_admin BOOLEAN DEFAULT 0"))
-        moment_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(moments)"))}
-        if "user_id" not in moment_columns: connection.execute(text("ALTER TABLE moments ADD COLUMN user_id INTEGER REFERENCES users(id)"))
-        if "image_url" not in moment_columns: connection.execute(text("ALTER TABLE moments ADD COLUMN image_url VARCHAR(255)"))
-        if "is_hidden" not in moment_columns: connection.execute(text("ALTER TABLE moments ADD COLUMN is_hidden BOOLEAN DEFAULT 0"))
-        conversation_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(conversations)"))}
-        if conversation_columns and "initiator_id" not in conversation_columns: connection.execute(text("ALTER TABLE conversations ADD COLUMN initiator_id INTEGER REFERENCES users(id)"))
-        if conversation_columns and "recipient_id" not in conversation_columns: connection.execute(text("ALTER TABLE conversations ADD COLUMN recipient_id INTEGER REFERENCES users(id)"))
-        message_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(chat_messages)"))}
-        if message_columns and "sender_user_id" not in message_columns: connection.execute(text("ALTER TABLE chat_messages ADD COLUMN sender_user_id INTEGER REFERENCES users(id)"))
+    # 旧库补列是 SQLite 时代的历史包袱。PostgreSQL 用当前模型 create_all 建库，
+    # 没有“表是旧版本”的情况；PRAGMA 在 PG 上也不存在。
+    if IS_SQLITE:
+        with engine.begin() as connection:
+            migrate_social(connection)
+            columns = {row[1] for row in connection.execute(text("PRAGMA table_info(locations)"))}
+            if "latitude" not in columns: connection.execute(text("ALTER TABLE locations ADD COLUMN latitude FLOAT DEFAULT 30.5134"))
+            if "longitude" not in columns: connection.execute(text("ALTER TABLE locations ADD COLUMN longitude FLOAT DEFAULT 114.4162"))
+            if "category" not in columns: connection.execute(text("ALTER TABLE locations ADD COLUMN category VARCHAR(20) DEFAULT 'landmark'"))
+            user_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(users)"))}
+            if user_columns and "is_admin" not in user_columns: connection.execute(text("ALTER TABLE users ADD COLUMN is_admin BOOLEAN DEFAULT 0"))
+            moment_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(moments)"))}
+            if "user_id" not in moment_columns: connection.execute(text("ALTER TABLE moments ADD COLUMN user_id INTEGER REFERENCES users(id)"))
+            if "image_url" not in moment_columns: connection.execute(text("ALTER TABLE moments ADD COLUMN image_url VARCHAR(255)"))
+            if "is_hidden" not in moment_columns: connection.execute(text("ALTER TABLE moments ADD COLUMN is_hidden BOOLEAN DEFAULT 0"))
+            conversation_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(conversations)"))}
+            if conversation_columns and "initiator_id" not in conversation_columns: connection.execute(text("ALTER TABLE conversations ADD COLUMN initiator_id INTEGER REFERENCES users(id)"))
+            if conversation_columns and "recipient_id" not in conversation_columns: connection.execute(text("ALTER TABLE conversations ADD COLUMN recipient_id INTEGER REFERENCES users(id)"))
+            message_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(chat_messages)"))}
+            if message_columns and "sender_user_id" not in message_columns: connection.execute(text("ALTER TABLE chat_messages ADD COLUMN sender_user_id INTEGER REFERENCES users(id)"))
     with SessionLocal() as db: seed_database(db)
     bootstrap_admin()
     yield
+
+def allowed_origins() -> list[str]:
+    raw = os.getenv("MOUKE_ALLOWED_ORIGINS", "")
+    if raw:
+        return [origin.strip() for origin in raw.split(",") if origin.strip()]
+    # 生产默认同源：页面与 API 由同一个域名提供，不需要任何跨域放行。
+    # 本地开发才保留 Vite/Capacitor 的来源。
+    if os.getenv("MOUKE_ENV", "development").lower() == "production":
+        return []
+    return ["http://localhost", "https://localhost", "capacitor://localhost", "http://localhost:5173", "http://127.0.0.1:5173"]
+
 
 app = FastAPI(title="某刻 API", version="0.2.0", lifespan=lifespan)
 app.include_router(admin_router)
 app.include_router(social_router)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost", "https://localhost", "capacitor://localhost", "http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=allowed_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 同源部署时页面本身由 Caddy/Nginx 提供，这里的安全头只作用于 API 与后端
+# 返回的文件。CSP 需要允许 MapLibre 的 blob worker 与内联样式。
+CSP = (
+    "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; "
+    "script-src 'self'; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; font-src 'self' data:; "
+    "connect-src 'self'; worker-src 'self' blob:; child-src 'self' blob:; form-action 'self'"
+)
+
+
+# 访问日志：一行一个 JSON，方便被 journald / Loki / 云日志直接采集。
+# 刻意不记录查询串与请求体：验证码、聊天内容不应进入日志。
+access_logger = logging.getLogger("mouke.access")
+if not access_logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    access_logger.addHandler(handler)
+# 开发/测试默认静默，生产在 .env.production 里设 MOUKE_LOG_LEVEL=INFO。
+access_logger.setLevel(os.getenv("MOUKE_LOG_LEVEL", "WARNING"))
+access_logger.propagate = False
+
+
+@app.middleware("http")
+async def access_log(request: Request, call_next):
+    request_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        access_logger.exception(json.dumps({
+            "request_id": request_id, "method": request.method,
+            "path": request.url.path, "status": 500,
+        }, ensure_ascii=False))
+        raise
+    response.headers["X-Request-ID"] = request_id
+    if request.url.path not in ("/health", "/healthz"):
+        access_logger.info(json.dumps({
+            "request_id": request_id,
+            "method": request.method,
+            "path": request.url.path,
+            "status": response.status_code,
+            "duration_ms": round((time.perf_counter() - started) * 1000, 1),
+            "client": request.client.host if request.client else "unknown",
+        }, ensure_ascii=False))
+    return response
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("Content-Security-Policy", CSP)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "geolocation=(self)")
+    forwarded_proto = request.headers.get("x-forwarded-proto", "")
+    if request.url.scheme == "https" or forwarded_proto == "https":
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
+
+
+@app.get("/healthz", include_in_schema=False)
+def healthz(db: Session = Depends(get_db)):
+    db.execute(text("SELECT 1"))
+    return {"status": "ok"}
+
 
 @app.get("/", include_in_schema=False)
 def root():
@@ -386,12 +485,21 @@ def email_status():
     }
 
 @app.post("/api/auth/request-code")
-def request_verification_code(payload: VerificationRequest, db: Session = Depends(get_db)):
+def request_verification_code(payload: VerificationRequest, db: Session = Depends(get_db), request: Request = None):
     student_id = normalized_student_id(payload.student_id)
     email = payload.email.strip().lower()
     expected_email = f"{student_id.lower()}@hust.edu.cn"
     if email != expected_email:
         raise HTTPException(400, f"请使用与学号一致的华科邮箱：{expected_email}")
+    # 发码会真实调用 SMTP，既是成本项也是骚扰面：IP 与学号两个维度都要限。
+    auth_security.enforce(
+        "request_code_ip", auth_security.client_ip(request),
+        *auth_security.REQUEST_CODE_IP, message="验证码请求过于频繁，请稍后再试",
+    )
+    auth_security.enforce(
+        "request_code_subject", student_id,
+        *auth_security.REQUEST_CODE_SUBJECT, message="该学号获取验证码过于频繁，请稍后再试",
+    )
     if db.scalar(select(User).where(or_(User.student_id == student_id, User.email == email))):
         raise HTTPException(409, "该学号已经注册")
     latest = db.scalar(select(VerificationCode).where(VerificationCode.student_id == student_id).order_by(VerificationCode.created_at.desc()))
@@ -410,15 +518,27 @@ def request_verification_code(payload: VerificationRequest, db: Session = Depend
     return {"sent": sent, "dev_code": code if dev_mode else None, "expires_in": 600}
 
 @app.post("/api/auth/register", status_code=201)
-def register(payload: RegisterRequest, db: Session = Depends(get_db)):
+def register(payload: RegisterRequest, db: Session = Depends(get_db), request: Request = None):
     student_id = normalized_student_id(payload.student_id)
     email = payload.email.strip().lower()
+    auth_security.enforce(
+        "register_ip", auth_security.client_ip(request),
+        *auth_security.REGISTER_IP, message="注册请求过于频繁，请稍后再试",
+    )
     if email != f"{student_id.lower()}@hust.edu.cn":
         raise HTTPException(400, "教育邮箱与学号不一致")
     if db.scalar(select(User).where(or_(User.student_id == student_id, User.email == email))):
         raise HTTPException(409, "该学号已经注册")
     code = db.scalar(select(VerificationCode).where(VerificationCode.student_id == student_id, VerificationCode.email == email, VerificationCode.consumed.is_(False)).order_by(VerificationCode.created_at.desc()))
-    if code is None or code.expires_at < datetime.now() or code.code_hash != hash_code(payload.code):
+    if code is None or code.expires_at < datetime.now():
+        raise HTTPException(400, "验证码无效或已过期")
+    if not hmac.compare_digest(code.code_hash, hash_code(payload.code)):
+        # 6 位数字只有 100 万种，不限次数就能在线爆破。按验证码行计数，
+        # 失败 5 次即作废，必须重新获取。
+        code.attempts = (code.attempts or 0) + 1
+        if code.attempts >= 5:
+            code.consumed = True
+        db.commit()
         raise HTTPException(400, "验证码无效或已过期")
     code.consumed = True
     user = User(student_id=student_id, email=email, password_hash=hash_password(payload.password), alias=make_alias(student_id))
@@ -426,10 +546,24 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
     return {"access_token": create_access_token(user,db), "token_type": "bearer", "user": user_out(user)}
 
 @app.post("/api/auth/login")
-def login(payload: LoginRequest, db: Session = Depends(get_db)):
-    user = db.scalar(select(User).where(User.student_id == normalized_student_id(payload.student_id)))
+def login(payload: LoginRequest, db: Session = Depends(get_db), request: Request = None):
+    student_id = normalized_student_id(payload.student_id)
+    auth_security.enforce(
+        "login_ip", auth_security.client_ip(request),
+        *auth_security.LOGIN_IP, message="登录尝试过于频繁，请稍后再试",
+    )
+    auth_security.enforce(
+        "login_subject", student_id,
+        *auth_security.LOGIN_SUBJECT, message="登录尝试过于频繁，请稍后再试",
+    )
+    user = db.scalar(select(User).where(User.student_id == student_id))
+    if user is not None and login_locked(user):
+        raise HTTPException(status.HTTP_423_LOCKED, f"密码错误次数过多，请 {LOCK_MINUTES} 分钟后再试")
     if user is None or not user.is_active or not verify_password(payload.password, user.password_hash):
+        if user is not None and user.is_active:
+            register_login_failure(user, db)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "学号或密码错误")
+    register_login_success(user, db)
     return {"access_token": create_access_token(user,db), "token_type": "bearer", "user": user_out(user)}
 
 @app.get("/api/auth/me")
@@ -453,6 +587,53 @@ def update_privacy(payload: PrivacyUpdate, user: Annotated[User, Depends(get_cur
 def update_position(payload: PositionUpdate, user: Annotated[User, Depends(get_current_user)], db: Session = Depends(get_db)):
     user.last_latitude = payload.latitude; user.last_longitude = payload.longitude; user.last_position_at = datetime.now(); db.commit()
     return {"updated": True, "shared": user.share_location}
+
+@app.post("/api/me/delete")
+def delete_account(payload: AccountDeleteRequest, user: Annotated[User, Depends(get_current_user)], db: Session = Depends(get_db)):
+    """注销账号：软删除 + 匿名化。
+
+    不能直接 DELETE users 行：动态、回声、会话、聊天记录都外键指向它。直接删会
+    让同学一侧的对话历史断掉，也会破坏举报证据。所以这里做的是
+    **解除个人身份关联**：学号/邮箱改写、密码随机化、会话吊销、个人资料清空，
+    自己发布的内容从公开信息流隐藏，聊天里保留对方视角的消息但去掉发送者关联。
+    """
+    if user.is_admin:
+        raise HTTPException(403, "管理员账号不能自助注销")
+    if not verify_password(payload.password, user.password_hash):
+        raise HTTPException(400, "密码不正确")
+    uid = user.id
+    db.execute(delete(AuthSession).where(AuthSession.user_id == uid))
+    db.execute(delete(VerificationCode).where(or_(
+        VerificationCode.student_id == user.student_id,
+        VerificationCode.email == user.email,
+    )))
+    db.execute(delete(Resonance).where(Resonance.user_id == uid))
+    db.execute(update(Moment).where(Moment.user_id == uid).values(
+        user_id=None, author_alias="已注销用户", is_hidden=True,
+    ))
+    db.execute(update(Echo).where(Echo.user_id == uid).values(user_id=None, is_hidden=True))
+    db.execute(update(Conversation).where(or_(
+        Conversation.initiator_id == uid, Conversation.recipient_id == uid,
+    )).values(status="closed"))
+    db.execute(update(ChatMessage).where(ChatMessage.sender_user_id == uid).values(sender_user_id=None))
+    db.execute(delete(UserBlock).where(or_(UserBlock.blocker_id == uid, UserBlock.blocked_id == uid)))
+    db.execute(delete(Report).where(Report.reporter_id == uid))
+    db.execute(delete(AiUsage).where(AiUsage.user_id == uid))
+    db.execute(delete(SuggestionFeedback).where(SuggestionFeedback.user_id == uid))
+    db.execute(delete(AnalyticsEvent).where(AnalyticsEvent.user_id == uid))
+    user.student_id = f"deleted-{uid}"
+    user.email = f"deleted-{uid}@deleted.invalid"
+    user.password_hash = hash_password(secrets.token_urlsafe(32))
+    user.alias = "已注销用户"
+    user.is_active = False
+    user.share_location = False
+    user.last_latitude = None
+    user.last_longitude = None
+    user.last_position_at = None
+    user.failed_login_count = 0
+    user.locked_until = None
+    db.commit()
+    return {"deleted": True}
 
 @app.get("/api/locations")
 def locations(db: Session = Depends(get_db)):
@@ -578,6 +759,8 @@ def image_caption(payload: ImageCaptionRequest, user: Annotated[User, Depends(ge
     path = UPLOAD_DIR / Path(payload.image_url).name
     if place is None: raise HTTPException(404, "地点不存在")
     if not payload.image_url.startswith("/api/uploads/") or not path.is_file(): raise HTTPException(400, "请先上传图片")
+    ratelimit.enforce(db, user.id, AiUsage, ratelimit.IMAGE_CAPTION)
+    db.add(AiUsage(user_id=user.id, kind="image_caption")); db.commit()
     profile = build_style_profile(user, db)
     examples = "\n".join(f"- {sample}" for sample in profile["representative_samples"]) or "- 暂无历史表达"
     prompt = f"""你是校园社交产品的文案副驾驶。看图后生成三条不同的中文动态文案，只返回 JSON：{{\"suggestions\":[\"...\",\"...\",\"...\"]}}。
@@ -617,6 +800,8 @@ def image_caption(payload: ImageCaptionRequest, user: Annotated[User, Depends(ge
 @app.post("/api/ai/reply-suggestions")
 def reply_suggestions(payload: ReplySuggestionRequest, user: Annotated[User, Depends(get_current_user)], db: Session = Depends(get_db)):
     row = get_conversation(db, payload.conversation_id, user, writable=True)
+    ratelimit.enforce(db, user.id, AiUsage, ratelimit.REPLY_SUGGESTION)
+    db.add(AiUsage(user_id=user.id, kind="reply_suggestion")); db.commit()
     profile = build_style_profile(user, db)
     recent = row.messages[-12:]
     dialogue = "\n".join(f"{'我' if message.sender_user_id == user.id else '对方'}：{message.content}" for message in recent)

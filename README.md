@@ -8,6 +8,15 @@
 - `backend/`：FastAPI + SQLAlchemy + SQLite
 - `backend/app/mouke.db`：首次启动自动创建并初始化校园地点
 
+## 上线部署
+
+单域名 HTTPS（Caddy/Nginx + Docker Compose）的部署步骤、备份恢复与排障见
+[deploy/README.md](deploy/README.md)。没有服务器时，可按
+[deploy/ORACLE_FREE.md](deploy/ORACLE_FREE.md) 用 Oracle Cloud 永久免费机 +
+DuckDNS 子域名部署，现有 compose 不用改。举报值班、数据保留期与 ICP 清单见
+[docs/OPERATIONS.md](docs/OPERATIONS.md)；上线改造项与压测结果见
+[docs/LAUNCH_TODO.md](docs/LAUNCH_TODO.md)。
+
 ## 本地运行
 
 ### 后端

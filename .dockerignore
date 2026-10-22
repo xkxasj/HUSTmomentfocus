@@ -1,0 +1,27 @@
+# 构建上下文是仓库根目录。不排除这些目录，镜像构建会先打包几百 MB 的
+# node_modules / 虚拟环境，再原样丢弃。
+.git
+.gitignore
+**/__pycache__
+**/*.py[cod]
+backend/.venv/
+backend/.venv-*/
+backend/.deps/
+backend/app/*.db
+backend/app/*.db-*
+backend/app/uploads/
+backend/app/map_cache/
+frontend/node_modules/
+frontend/dist/
+frontend/android/.gradle/
+frontend/android/**/build/
+frontend/android/local.properties
+frontend/.env.mobile
+.env
+.env.*
+!.env.production.example
+deploy/backups/
+backups/
+*.log
+*.apk
+*.aab

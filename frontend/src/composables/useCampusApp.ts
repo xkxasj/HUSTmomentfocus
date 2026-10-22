@@ -339,9 +339,13 @@ const handleAuthenticated = (user: UserProfile) => {
   void loadAppData()
 }
 
-const logout = async () => {
+const logout = async (force = false) => {
   try { await api.revokeSession() }
-  catch (cause) { if (!api.isUnauthorized(cause)) { notify('退出失败，请检查连接后重试'); return } }
+  catch (cause) {
+    // 账号注销后服务端已吊销全部会话，revoke 必然 401 或网络失败；
+    // force 让这条路径仍然清掉本地状态，而不是把用户留在坏掉的页面上。
+    if (!force && !api.isUnauthorized(cause)) { notify('退出失败，请检查连接后重试'); return }
+  }
   sessionGeneration += 1
   chatRequest += 1
   stopLocationWatch()

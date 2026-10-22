@@ -23,6 +23,28 @@ const unblock = async (id: number) => {
   try { await api.unblock(id); blocks.value = blocks.value.filter(b => b.id !== id); app.notify('已解除屏蔽，结束的会话不会自动恢复'); await app.refreshConversations() }
   catch (cause) { app.notify(cause instanceof Error ? cause.message : '解除屏蔽失败') }
 }
+const deleteOpen = ref(false)
+const deletePassword = ref('')
+const deleteConfirm = ref('')
+const deleting = ref(false)
+const deleteError = ref('')
+const deleteAccount = async () => {
+  if (deleting.value) return
+  deleting.value = true
+  deleteError.value = ''
+  try {
+    await api.deleteAccount(deletePassword.value, deleteConfirm.value)
+    deletePassword.value = ''
+    deleteConfirm.value = ''
+    deleteOpen.value = false
+    await app.logout(true)
+    app.notify('账号已注销，所有登录会话已失效')
+  } catch (cause) {
+    deleteError.value = cause instanceof Error ? cause.message : '注销失败，请稍后重试'
+  } finally {
+    deleting.value = false
+  }
+}
 onMounted(load)
 </script>
 
@@ -31,7 +53,7 @@ onMounted(load)
     <p class="eyebrow">我的校园足迹</p><h1>你不是在经营人设，<br><em>只是在收藏经过。</em></h1>
     <section class="account-card">
       <div><p class="eyebrow">校园账号</p><h2>{{ app.currentUser.value?.alias }}</h2><span>{{ safeStudentId }} · {{ safeEmail }}</span></div>
-      <button class="ghost-button" @click="app.logout">退出登录</button>
+      <button class="ghost-button" @click="app.logout()">退出登录</button>
     </section>
     <section v-if="app.currentUser.value?.is_admin" class="admin-entry-card">
       <div><p class="eyebrow">管理员权限</p><h2>查看运营数据与管理内容</h2><p>管理页面与普通用户页面共用同一套应用，但由服务端权限严格隔离。</p></div>
@@ -56,5 +78,27 @@ onMounted(load)
       <div class="moment-grid"><article v-for="moment in app.activity.value.moments" :key="moment.id" class="moment-card"><small>{{ moment.location_name }} · {{ new Date(moment.created_at).toLocaleString('zh-CN') }}</small><img v-if="moment.image_url" class="moment-image" :src="api.mediaUrl(moment.image_url)" alt="我的片段图片" loading="lazy"><p>{{ moment.content }}</p><MomentActions :moment="moment" /></article></div>
     </section>
     <section class="privacy-card"><div><h2>屏蔽名单</h2><p v-if="!blocks.length">你还没有屏蔽任何人。</p><div v-for="block in blocks" :key="block.id" class="echo-row"><span>{{ block.alias }}</span><button @click="unblock(block.id)">解除屏蔽</button></div></div></section>
+    <section class="privacy-card danger-card">
+      <div>
+        <p class="eyebrow">账号与数据</p>
+        <h2>注销账号</h2>
+        <p>注销后无法恢复：账号立即停用、资料清空、动态与回声从公开信息流隐藏。聊天记录会保留在对方会话里，但不再关联你的身份。</p>
+        <div class="legal-links">
+          <a href="/legal/privacy.html" target="_blank" rel="noopener">隐私政策</a>
+          <a href="/legal/terms.html" target="_blank" rel="noopener">用户协议</a>
+          <a href="/legal/account-deletion.html" target="_blank" rel="noopener">注销说明</a>
+        </div>
+      </div>
+      <button v-if="!deleteOpen" class="ghost-button danger" @click="deleteOpen = true">注销账号</button>
+      <div v-else class="delete-form">
+        <input v-model="deletePassword" type="password" placeholder="输入当前密码" autocomplete="current-password">
+        <input v-model="deleteConfirm" placeholder="输入“注销账号”以确认">
+        <p v-if="deleteError" class="auth-error" role="alert">{{ deleteError }}</p>
+        <div class="delete-actions">
+          <button class="ghost-button" :disabled="deleting" @click="deleteOpen = false">取消</button>
+          <button class="primary-button danger" :disabled="deleting || !deletePassword || deleteConfirm !== '注销账号'" @click="deleteAccount">{{ deleting ? '正在注销…' : '确认注销' }}</button>
+        </div>
+      </div>
+    </section>
   </section>
 </template>

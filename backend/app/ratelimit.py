@@ -81,6 +81,19 @@ SUGGESTION_FEEDBACK = Quota(
     window_seconds=600,
     message="操作太频繁了，歇一会儿再试。",
 )
+# AI 接口直接产生外部 API 费用，必须按账号限流；否则一个账号就能把额度刷爆。
+IMAGE_CAPTION = Quota(
+    name="image_caption",
+    limit=30,
+    window_seconds=600,
+    message="图片文案生成太频繁了，歇一会儿再试。",
+)
+REPLY_SUGGESTION = Quota(
+    name="reply_suggestion",
+    limit=60,
+    window_seconds=600,
+    message="回复建议生成太频繁了，歇一会儿再试。",
+)
 
 
 def _recent_count(db: Session, model, user_id: int, since: datetime) -> int:

@@ -16,8 +16,38 @@ from .database import get_db
 from .models import AuthSession, User
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
-CODE_SECRET = os.getenv("MOUKE_CODE_SECRET", "mouke-local-development-change-me")
+DEFAULT_CODE_SECRET = "mouke-local-development-change-me"
+CODE_SECRET = os.getenv("MOUKE_CODE_SECRET", DEFAULT_CODE_SECRET)
+ALIAS_SECRET = os.getenv("MOUKE_ALIAS_SECRET") or CODE_SECRET
 PBKDF2_ITERATIONS = 600_000
+MAX_FAILED_LOGINS = 5
+LOCK_MINUTES = 15
+
+
+def validate_production_config() -> None:
+    """生产环境的“失败即拒绝启动”检查。
+
+    这些默认值在本地开发时很方便，一旦原样上公网就是事故：验证码会直接回显、
+    验证码哈希可被离线伪造、昵称可被学号反推。与其在运行中悄悄降级，不如让
+    进程起不来。
+    """
+    if os.getenv("MOUKE_ENV", "development").lower() != "production":
+        return
+    problems: list[str] = []
+    if os.getenv("MOUKE_DEV_EMAIL_CODES", "0") == "1":
+        problems.append("MOUKE_DEV_EMAIL_CODES 必须为 0")
+    if CODE_SECRET == DEFAULT_CODE_SECRET or len(CODE_SECRET) < 32:
+        problems.append("MOUKE_CODE_SECRET 必须设置为至少 32 位的随机值")
+    if ALIAS_SECRET == DEFAULT_CODE_SECRET or len(ALIAS_SECRET) < 32:
+        problems.append("MOUKE_ALIAS_SECRET 必须设置为至少 32 位的随机值")
+    if ALIAS_SECRET == CODE_SECRET:
+        # 两条密钥各管一件事：一条泄露不应同时让验证码可伪造、昵称可反推。
+        problems.append("MOUKE_ALIAS_SECRET 必须与 MOUKE_CODE_SECRET 不同")
+    if not os.getenv("MOUKE_SMTP_HOST"):
+        problems.append("MOUKE_SMTP_HOST 未配置，生产环境无法发送验证码")
+    if problems:
+        raise RuntimeError("生产配置不安全：" + "；".join(problems))
+
 
 def hash_code(code: str) -> str:
     return hashlib.sha256(f"{code}:{CODE_SECRET}".encode()).hexdigest()
@@ -72,7 +102,31 @@ def send_verification_email(email: str, code: str) -> bool:
     return True
 
 def make_alias(student_id: str) -> str:
+    """由学号派生匿名昵称。
+
+    必须带服务端密钥：学号是可枚举的，裸 SHA-256 会让任何人离线算出
+    “学号 → 昵称”，匿名就失效了。HMAC 让没有密钥的人无法建立映射。
+    """
     adjectives = ["银杏", "晚风", "星光", "湖畔", "青苔", "橘灯", "书页", "云朵"]
     nouns = ["纸船", "松果", "猫", "铅笔", "月亮", "蒲公英", "海盐", "钟摆"]
-    digest = hashlib.sha256(student_id.encode()).digest()
+    digest = hmac.new(ALIAS_SECRET.encode(), student_id.encode(), hashlib.sha256).digest()
     return f"匿名{adjectives[digest[0] % len(adjectives)]}{nouns[digest[1] % len(nouns)]}"
+
+
+def login_locked(user: User) -> bool:
+    return bool(user.locked_until and user.locked_until > datetime.now())
+
+
+def register_login_failure(user: User, db: Session) -> None:
+    user.failed_login_count = (user.failed_login_count or 0) + 1
+    if user.failed_login_count >= MAX_FAILED_LOGINS:
+        user.locked_until = datetime.now() + timedelta(minutes=LOCK_MINUTES)
+        user.failed_login_count = 0
+    db.commit()
+
+
+def register_login_success(user: User, db: Session) -> None:
+    if user.failed_login_count or user.locked_until:
+        user.failed_login_count = 0
+        user.locked_until = None
+        db.commit()

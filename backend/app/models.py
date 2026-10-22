@@ -32,6 +32,8 @@ class User(Base):
     last_latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     last_longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     last_position_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    failed_login_count: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 class VerificationCode(Base):
@@ -42,6 +44,7 @@ class VerificationCode(Base):
     code_hash: Mapped[str] = mapped_column(String(64))
     expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
     consumed: Mapped[bool] = mapped_column(Boolean, default=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
 
 class AuthSession(Base):
@@ -135,6 +138,15 @@ class Report(Base):
     resolution: Mapped[str] = mapped_column(String(300), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+class AiUsage(Base):
+    """AI 调用计量。只记时间与用途，不存 prompt / 图片，避免额外隐私面。"""
+    __tablename__ = "ai_usage"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(20), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
+
 
 class SuggestionFeedback(Base):
     __tablename__ = "suggestion_feedback"

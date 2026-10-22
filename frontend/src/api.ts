@@ -74,6 +74,7 @@ export const api = {
   me: () => request('/api/auth/me').then(json<UserProfile>),
   updatePrivacy: (shareLocation: boolean) => request('/api/me/privacy', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ share_location: shareLocation }) }).then(json<UserProfile>),
   updatePosition: (latitude: number, longitude: number) => request('/api/me/position', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ latitude, longitude }) }).then(json<{ updated: boolean; shared: boolean }>),
+  deleteAccount: (password: string, confirm: string) => request('/api/me/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password, confirm }) }).then(json<{ deleted: boolean }>),
   feed: (offset = 0) => fetchWithTimeout(endpoint(`/api/feed?offset=${offset}`)).then(json<FeedData>),
   locations: () => fetchWithTimeout(endpoint('/api/locations')).then(json<Location[]>),
   moments: (locationId: number) => fetchWithTimeout(endpoint(`/api/locations/${locationId}/moments`)).then(json<Moment[]>),

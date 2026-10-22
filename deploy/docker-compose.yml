@@ -1,0 +1,57 @@
+# 在 deploy/ 目录执行：
+#   cp ../.env.production.example ../.env.production   # 填好真实值
+#   docker compose --env-file ../.env.production up -d --build
+#
+# 必须带 --env-file：backend 通过 env_file 能读到配置，但 **web 容器的域名**
+# 依赖 compose 的变量插值（${MOUKE_DOMAIN}），插值只读 --env-file / shell，
+# 不会读 service 的 env_file。少了它，Caddy 会退回 localhost。
+#
+# 两个容器：backend（FastAPI）与 web（Caddy + 构建好的 SPA）。
+# 只有 web 暴露 80/443；backend 只在内网被反向代理访问。
+name: mouke
+
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.backend
+    restart: unless-stopped
+    env_file:
+      - ../.env.production
+    environment:
+      TZ: Asia/Shanghai
+      MOUKE_DB_PATH: /data/mouke.db
+      MOUKE_UPLOAD_DIR: /data/uploads
+      MOUKE_MAP_CACHE_DIR: /data/map_cache
+    volumes:
+      # 数据库、上传图片、地图瓦片缓存都在这一个卷里，备份只需备它。
+      - mouke_data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web
+    restart: unless-stopped
+    environment:
+      MOUKE_DOMAIN: ${MOUKE_DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  mouke_data:
+  caddy_data:
+  caddy_config:

@@ -32,7 +32,13 @@ from app.models import Echo, Location, Moment, SuggestionFeedback, User
 from app.seed import seed_database
 from app.social_migrations import migrate_social
 
-ALL_QUOTAS = (ratelimit.MOMENT, ratelimit.ECHO, ratelimit.SUGGESTION_FEEDBACK)
+ALL_QUOTAS = (
+    ratelimit.MOMENT,
+    ratelimit.ECHO,
+    ratelimit.SUGGESTION_FEEDBACK,
+    ratelimit.IMAGE_CAPTION,
+    ratelimit.REPLY_SUGGESTION,
+)
 
 
 class QuotaConstantTest(unittest.TestCase):

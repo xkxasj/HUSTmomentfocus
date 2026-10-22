@@ -2,3 +2,5 @@ fastapi>=0.116,<1
 uvicorn[standard]>=0.35,<1
 sqlalchemy>=2.0,<3
 pydantic>=2.11,<3
+# 默认部署仍用 SQLite；装上驱动后可用 MOUKE_DATABASE_URL 切 PostgreSQL。
+psycopg[binary]>=3.2,<4

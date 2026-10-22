@@ -1,0 +1,33 @@
+# 单域名部署：同一个 origin 提供 SPA 与 API。
+# 同源的好处是前端不需要 CORS、cookie/token 不会跨站，CSP 也能收紧到 'self'。
+{$MOUKE_DOMAIN:localhost} {
+	encode zstd gzip
+
+	# API 反向代理。--proxy-headers 已在容器启动命令里开启，
+	# 后端拿到的 request.client 是真实客户端地址（限流按它计数）。
+	handle /api/* {
+		reverse_proxy backend:8000
+	}
+
+	# healthz 只给负载均衡/运维探活，不对外暴露数据库细节。
+	handle /healthz {
+		reverse_proxy backend:8000
+	}
+
+	handle {
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+	}
+
+	header {
+		# 与后端 security_headers 保持一致；HTML 由 Caddy 直接返回，必须在这里加。
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; child-src 'self' blob:; form-action 'self'"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		Permissions-Policy "geolocation=(self)"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+}
