@@ -63,7 +63,7 @@ class SocialApiTest(unittest.TestCase):
         self.assertEqual(result.status_code, 200, result.text)
 
     @patch.dict('os.environ', {'MOUKE_DEV_EMAIL_CODES': '1'})
-    @patch('app.self_service.send_verification_email', return_value=False)
+    @patch('app.password_recovery.send_verification_email', return_value=False)
     def test_password_reset_one_time_expiry_attempts_and_session_revocation(self, mail):
         request = {'student_id': 'test000'}
         response = self.client.post('/api/auth/reset-code', json=request).json()
