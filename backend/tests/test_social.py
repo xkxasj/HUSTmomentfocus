@@ -61,6 +61,31 @@ class SocialApiTest(unittest.TestCase):
         result = self.client.post(f'/api/conversations/{conversation_id}/decision', headers=self.headers[0], json={"action": "accept"})
         self.assertEqual(result.status_code, 200, result.text)
 
+    def test_owner_content_controls_and_preserved_conversations(self):
+        path = f'/api/moments/{self.moment_id}'
+        self.assertEqual(self.client.patch(path, headers=self.headers[1], json={"content": "冒充"}).status_code, 404)
+        self.assertEqual(self.client.delete(path, headers=self.headers[1]).status_code, 404)
+        self.assertEqual(self.client.patch(path, headers=self.headers[0], json={"content": "13812345678"}).status_code, 400)
+        self.assertEqual(self.client.patch(path, headers=self.headers[0], json={"content": "修改后的晚风"}).status_code, 200)
+        self.assertEqual(self.client.get('/api/feed').json()['moments'][0]['content'], '修改后的晚风')
+        self.client.post(path + '/echoes', headers=self.headers[1], json={"content": "回声"})
+        echo = self.client.get(path + '/interactions', headers=self.headers[1]).json()['echoes'][0]
+        self.assertTrue(echo['is_mine'])
+        ep = f"/api/echoes/{echo['id']}"
+        self.assertEqual(self.client.patch(ep, headers=self.headers[0], json={"content": "越权"}).status_code, 404)
+        self.assertEqual(self.client.patch(ep, headers=self.headers[1], json={"content": "改好了"}).status_code, 200)
+        self.assertEqual(self.client.delete(ep, headers=self.headers[0]).status_code, 404)
+        self.assertEqual(self.client.delete(ep, headers=self.headers[1]).status_code, 200)
+        cid = self.invite()
+        self.assertEqual(self.client.delete(path, headers=self.headers[0]).status_code, 200)
+        self.assertEqual(self.client.get('/api/feed').json()['moments'], [])
+        self.assertEqual(self.client.get(path + '/interactions', headers=self.headers[0]).status_code, 404)
+        with self.sessions() as db:
+            self.assertIsNone(db.get(Conversation, cid).origin_moment_id)
+            self.assertTrue(db.get(Moment, self.moment_id).is_deleted)
+            self.assertEqual(db.get(Moment, self.moment_id).content, '')
+        self.assertEqual(self.client.patch(f'/api/admin/moments/{self.moment_id}/visibility', headers=self.headers[3], json={'is_hidden': False}).status_code, 404)
+
     def test_resonance_idempotency_echo_and_activity(self):
         path = f'/api/moments/{self.moment_id}/resonances'
         for kind in ("抱抱你", "抱抱你", "我也这样"):
