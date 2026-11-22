@@ -5,6 +5,7 @@ import { api } from '../api'
 import { useCampusApp } from '../composables/useCampusApp'
 import type { Interactions, Moment, ReportTarget } from '../types'
 import ReportDialog from './ReportDialog.vue'
+import ContentEditor from './ContentEditor.vue'
 
 const props = defineProps<{ moment: Moment }>()
 const app = useCampusApp()
@@ -58,7 +59,7 @@ const chat = async () => { if (await app.openChatFromMoment(props.moment)) await
       <template v-if="data">
         <div class="social-actions"><button v-for="kind in ['我也这样', '抱抱你', '我曾经也是']" :key="kind" :aria-pressed="data.my_resonance === kind" :class="{ selected: data.my_resonance === kind }" :disabled="busy" @click="resonate(kind)">{{ kind }}</button></div>
         <p v-if="!data.echoes.length">还没有公开回声，留下一句善意吧。</p>
-        <div v-for="echo in data.echoes" :key="echo.id" class="echo-row"><div><small>{{ echo.author_alias }}</small><p>{{ echo.content }}</p></div><button @click="reportTarget = { type: 'echo', id: echo.id }">举报</button></div>
+        <div v-for="echo in data.echoes" :key="echo.id" class="echo-row"><div><small>{{ echo.author_alias }}</small><p>{{ echo.content }}</p><ContentEditor v-if="echo.is_mine" kind="echoes" :id="echo.id" :content="echo.content" @changed="load(); app.refreshLocations()" @deleted="load(); app.refreshLocations()" /></div><button @click="reportTarget = { type: 'echo', id: echo.id }">举报</button></div>
         <form class="echo-form" @submit.prevent="send"><input v-model="draft" aria-label="公开回声" maxlength="30" placeholder="公开回声，最多 30 字"><button :disabled="busy || !draft.trim()">发送</button></form>
       </template>
     </section>

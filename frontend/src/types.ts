@@ -136,7 +136,7 @@ export type ReplySuggestion = {
   text: string
 }
 
-export type Echo = { id: number; content: string; author_alias: string; created_at: string }
+export type Echo = { id: number; content: string; is_mine: boolean; author_alias: string; created_at: string }
 export type Interactions = { my_resonance: string | null; resonance_count: number; echoes: Echo[] }
 export type BlockedUser = { id: number; alias: string; created_at: string }
 export type ReportTarget = 'moment' | 'echo' | 'conversation'

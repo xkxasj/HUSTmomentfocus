@@ -22,6 +22,8 @@
 .report-row input { display: block; width: 100%; margin: 10px 0; border: 1px solid #c8d6ca; padding: 10px; border-radius: 10px; }
 .modal label { display: block; margin: 16px 0; }
 .moment-interactions { width: 100%; }
+.content-editor { width: 100%; }
+.content-editor textarea { width: 100%; box-sizing: border-box; border: 1px solid #c8d6ca; border-radius: 12px; padding: 12px; font: inherit; resize: vertical; }
 .message-panel { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .message-head { min-height: 72px; flex-shrink: 0; }
 .message-stream { flex: 1; min-height: 100px; }
