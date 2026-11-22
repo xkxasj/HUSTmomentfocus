@@ -11,7 +11,7 @@ from sqlalchemy.orm import sessionmaker
 from app.auth import create_access_token
 from app.database import Base, get_db
 from app.main import app
-from app.models import AdminAuditLog, Conversation, Location, Moment, PasswordReset, User
+from app.models import AdminAuditLog, Conversation, Location, Moment, User
 from app.seed import seed_database
 from app.social_migrations import migrate_social
 
@@ -61,36 +61,6 @@ class SocialApiTest(unittest.TestCase):
     def accept(self, conversation_id):
         result = self.client.post(f'/api/conversations/{conversation_id}/decision', headers=self.headers[0], json={"action": "accept"})
         self.assertEqual(result.status_code, 200, result.text)
-
-    @patch.dict('os.environ', {'MOUKE_DEV_EMAIL_CODES': '1'})
-    @patch('app.password_recovery.send_verification_email', return_value=False)
-    def test_password_reset_one_time_expiry_attempts_and_session_revocation(self, mail):
-        request = {'student_id': 'test000'}
-        response = self.client.post('/api/auth/reset-code', json=request).json()
-        code = response['dev_code']
-        self.assertEqual(len(code), 6)
-        self.assertIsNone(self.client.post('/api/auth/reset-code', json=request).json()['dev_code'])
-        payload = {**request, 'code': code, 'password': 'new-password-123'}
-        with self.sessions() as db:
-            row = db.scalar(select(PasswordReset))
-            row.expires_at = datetime.now() - timedelta(seconds=1)
-            db.commit()
-        self.assertEqual(self.client.post('/api/auth/reset-password', json=payload).status_code, 400)
-        with self.sessions() as db:
-            db.scalar(select(PasswordReset)).expires_at = datetime.now() + timedelta(minutes=5)
-            db.commit()
-        self.assertEqual(self.client.post('/api/auth/reset-password', json=payload).status_code, 200)
-        self.assertEqual(self.client.get('/api/auth/me', headers=self.headers[0]).status_code, 401)
-        self.assertEqual(self.client.post('/api/auth/reset-password', json=payload).status_code, 400)
-        self.assertEqual(self.client.post('/api/auth/login', json={'student_id': 'TEST000', 'password': payload['password']}).status_code, 200)
-        with self.sessions() as db:
-            db.scalar(select(PasswordReset)).created_at = datetime.now() - timedelta(minutes=2)
-            db.commit()
-        new_code = self.client.post('/api/auth/reset-code', json=request).json()['dev_code']
-        wrong = '000000' if new_code != '000000' else '111111'
-        for _ in range(5):
-            self.assertEqual(self.client.post('/api/auth/reset-password', json={**payload, 'code': wrong}).status_code, 400)
-        self.assertEqual(self.client.post('/api/auth/reset-password', json={**payload, 'code': new_code}).status_code, 400)
 
     def test_resonance_idempotency_echo_and_activity(self):
         path = f'/api/moments/{self.moment_id}/resonances'
@@ -231,6 +201,39 @@ class SocialApiTest(unittest.TestCase):
         rid = self.client.get('/api/admin/reports', headers=self.headers[3]).json()[0]["id"]
         self.assertEqual(self.client.patch(f'/api/admin/reports/{rid}', headers=self.headers[3], json={"action": "close", "note": "结束被举报会话"}).status_code, 200)
         self.assertEqual(self.client.get('/api/conversations', headers=self.headers[1]).json()[0]["status"], 'closed')
+
+
+    @patch.dict('os.environ', {'MOUKE_DEV_EMAIL_CODES': '1'})
+    @patch('app.password_recovery.send_verification_email', return_value=False)
+    def test_password_reset_one_time_expiry_attempts_and_session_revocation(self, mail):
+        from app.models import PasswordReset
+
+        request = {'student_id': 'test000'}
+        response = self.client.post('/api/auth/reset-code', json=request).json()
+        code = response['dev_code']
+        self.assertEqual(len(code), 6)
+        self.assertIsNone(self.client.post('/api/auth/reset-code', json=request).json()['dev_code'])
+        payload = {**request, 'code': code, 'password': 'new-password-123'}
+        with self.sessions() as db:
+            row = db.scalar(select(PasswordReset))
+            row.expires_at = datetime.now() - timedelta(seconds=1)
+            db.commit()
+        self.assertEqual(self.client.post('/api/auth/reset-password', json=payload).status_code, 400)
+        with self.sessions() as db:
+            db.scalar(select(PasswordReset)).expires_at = datetime.now() + timedelta(minutes=5)
+            db.commit()
+        self.assertEqual(self.client.post('/api/auth/reset-password', json=payload).status_code, 200)
+        self.assertEqual(self.client.get('/api/auth/me', headers=self.headers[0]).status_code, 401)
+        self.assertEqual(self.client.post('/api/auth/reset-password', json=payload).status_code, 400)
+        self.assertEqual(self.client.post('/api/auth/login', json={'student_id': 'TEST000', 'password': payload['password']}).status_code, 200)
+        with self.sessions() as db:
+            db.scalar(select(PasswordReset)).created_at = datetime.now() - timedelta(minutes=2)
+            db.commit()
+        new_code = self.client.post('/api/auth/reset-code', json=request).json()['dev_code']
+        wrong = '000000' if new_code != '000000' else '111111'
+        for _ in range(5):
+            self.assertEqual(self.client.post('/api/auth/reset-password', json={**payload, 'code': wrong}).status_code, 400)
+        self.assertEqual(self.client.post('/api/auth/reset-password', json={**payload, 'code': new_code}).status_code, 400)
 
 
 class LegacyMigrationTest(unittest.TestCase):

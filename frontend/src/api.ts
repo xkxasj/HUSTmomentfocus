@@ -61,8 +61,6 @@ const json = async <T>(response: Response): Promise<T> => {
 }
 
 export const api = {
-  resetCode: (student_id: string) => request('/api/auth/reset-code', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ student_id }) }, 20000).then(json<{ message: string; dev_code: string | null }>),
-  resetPassword: (student_id: string, code: string, password: string) => request('/api/auth/reset-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ student_id, code, password }) }).then(json<{ reset: boolean }>),
   apiBase: currentApiBase,
   setApiBase: (value: string) => localStorage.setItem(API_BASE_KEY, value.trim().replace(/\/$/, '')),
   hasToken: () => Boolean(localStorage.getItem(TOKEN_KEY)),
@@ -74,6 +72,8 @@ export const api = {
   register: (studentId: string, email: string, code: string, password: string) => request('/api/auth/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ student_id: studentId, email, code, password }) }).then(json<AuthResponse>),
   login: (studentId: string, password: string) => request('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ student_id: studentId, password }) }).then(json<AuthResponse>),
   me: () => request('/api/auth/me').then(json<UserProfile>),
+  resetCode: (student_id: string) => request('/api/auth/reset-code', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ student_id }) }, 20000).then(json<{ message: string; dev_code: string | null }>),
+  resetPassword: (student_id: string, code: string, password: string) => request('/api/auth/reset-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ student_id, code, password }) }).then(json<{ reset: boolean }>),
   updatePrivacy: (shareLocation: boolean) => request('/api/me/privacy', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ share_location: shareLocation }) }).then(json<UserProfile>),
   updatePosition: (latitude: number, longitude: number) => request('/api/me/position', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ latitude, longitude }) }).then(json<{ updated: boolean; shared: boolean }>),
   deleteAccount: (password: string, confirm: string) => request('/api/me/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password, confirm }) }).then(json<{ deleted: boolean }>),
