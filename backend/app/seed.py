@@ -1,4 +1,3 @@
-from datetime import datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from .models import Location, Moment
@@ -51,11 +50,6 @@ def seed_database(db: Session) -> None:
         for field, value in values.items():
             setattr(place, field, value)
 
-    samples = list(db.scalars(select(Moment).order_by(Moment.id).limit(len(MOMENTS))))
-    if not samples:
+    if db.scalar(select(Moment.id).limit(1)) is None:
         db.add_all(Moment(location_id=row[0], author_alias=row[1], content=row[2], mood=row[3]) for row in MOMENTS)
-    else:
-        for index, (moment, row) in enumerate(zip(samples, MOMENTS)):
-            moment.location_id, moment.author_alias, moment.content, moment.mood = row
-            moment.created_at = datetime.now() - timedelta(hours=index * 2 + 1)
     db.commit()

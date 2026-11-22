@@ -66,6 +66,7 @@ class Moment(Base):
     mood: Mapped[str] = mapped_column(String(20), default="平静")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     is_official: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     is_hidden: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     location: Mapped[Location] = relationship(back_populates="moments")
     resonances: Mapped[list["Resonance"]] = relationship(cascade="all, delete-orphan")
@@ -86,6 +87,7 @@ class Echo(Base):
     moment_id: Mapped[int] = mapped_column(ForeignKey("moments.id"), index=True)
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     is_hidden: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     content: Mapped[str] = mapped_column(String(80))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
