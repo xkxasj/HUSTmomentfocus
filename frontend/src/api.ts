@@ -61,6 +61,8 @@ const json = async <T>(response: Response): Promise<T> => {
 }
 
 export const api = {
+  resetCode: (student_id: string) => request('/api/auth/reset-code', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ student_id }) }, 20000).then(json<{ message: string; dev_code: string | null }>),
+  resetPassword: (student_id: string, code: string, password: string) => request('/api/auth/reset-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ student_id, code, password }) }).then(json<{ reset: boolean }>),
   apiBase: currentApiBase,
   setApiBase: (value: string) => localStorage.setItem(API_BASE_KEY, value.trim().replace(/\/$/, '')),
   hasToken: () => Boolean(localStorage.getItem(TOKEN_KEY)),
