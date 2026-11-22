@@ -90,7 +90,7 @@ def send_verification_email(email: str, code: str) -> bool:
     password = os.getenv("MOUKE_SMTP_PASSWORD")
     sender = os.getenv("MOUKE_SMTP_FROM", username or "noreply@hust.edu.cn")
     message = EmailMessage()
-    message["Subject"] = "某刻校园注册验证码"
+    message["Subject"] = "某刻校园账号验证码"
     message["From"] = sender
     message["To"] = email
     message.set_content(f"你的某刻校园验证码是：{code}\n\n验证码 10 分钟内有效。请勿转发给他人。")

@@ -45,6 +45,8 @@ from .social import blocked_pair, conversation_state, get_conversation, privacy_
 from .social_migrations import migrate_social
 from .schemas import AccountDeleteRequest, ConversationCreate, EchoCreate, ImageCaptionRequest, LoginRequest, MessageCreate, MomentCreate, MomentOut, PositionUpdate, PrivacyUpdate, PromptRequest, RegisterRequest, ReplySuggestionRequest, ResonanceCreate, SuggestionFeedbackCreate, VerificationRequest
 from .seed import seed_database
+from .models import PasswordReset
+from .password_recovery import router as recovery_router
 
 UPLOAD_DIR = Path(os.getenv("MOUKE_UPLOAD_DIR", Path(__file__).resolve().parent / "uploads"))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -150,6 +152,7 @@ def allowed_origins() -> list[str]:
 app = FastAPI(title="某刻 API", version="0.2.0", lifespan=lifespan)
 app.include_router(admin_router)
 app.include_router(social_router)
+app.include_router(recovery_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins(),
@@ -618,6 +621,7 @@ def delete_account(payload: AccountDeleteRequest, user: Annotated[User, Depends(
     db.execute(update(ChatMessage).where(ChatMessage.sender_user_id == uid).values(sender_user_id=None))
     db.execute(delete(UserBlock).where(or_(UserBlock.blocker_id == uid, UserBlock.blocked_id == uid)))
     db.execute(delete(Report).where(Report.reporter_id == uid))
+    db.execute(delete(PasswordReset).where(PasswordReset.user_id == uid))
     db.execute(delete(AiUsage).where(AiUsage.user_id == uid))
     db.execute(delete(SuggestionFeedback).where(SuggestionFeedback.user_id == uid))
     db.execute(delete(AnalyticsEvent).where(AnalyticsEvent.user_id == uid))
