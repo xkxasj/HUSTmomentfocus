@@ -25,6 +25,8 @@ from sqlalchemy.orm import Session, selectinload
 from . import auth_security, moderation, ratelimit
 from .database import Base, SessionLocal, engine, get_db
 from .db_compat import IS_SQLITE, insert
+from .models import PasswordReset
+from .password_recovery import router as recovery_router
 from .auth import (
     LOCK_MINUTES,
     create_access_token,
@@ -149,6 +151,7 @@ def allowed_origins() -> list[str]:
 
 
 app = FastAPI(title="某刻 API", version="0.2.0", lifespan=lifespan)
+app.include_router(recovery_router)
 app.include_router(admin_router)
 app.include_router(social_router)
 app.include_router(content_router)
@@ -605,6 +608,7 @@ def delete_account(payload: AccountDeleteRequest, user: Annotated[User, Depends(
         raise HTTPException(400, "密码不正确")
     uid = user.id
     db.execute(delete(AuthSession).where(AuthSession.user_id == uid))
+    db.execute(delete(PasswordReset).where(PasswordReset.user_id == uid))
     db.execute(delete(VerificationCode).where(or_(
         VerificationCode.student_id == user.student_id,
         VerificationCode.email == user.email,
