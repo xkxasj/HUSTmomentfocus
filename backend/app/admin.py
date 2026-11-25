@@ -216,7 +216,7 @@ def admin_user_status(
 
 @router.get("/admin/moments")
 def admin_moments(admin: User = Depends(get_admin_user), db: Session = Depends(get_db)):
-    rows = list(db.scalars(select(Moment).options(selectinload(Moment.location)).order_by(Moment.created_at.desc()).limit(500)))
+    rows = list(db.scalars(select(Moment).options(selectinload(Moment.location)).where(Moment.is_deleted.is_(False)).order_by(Moment.created_at.desc()).limit(500)))
     return [{
         "id": row.id,
         "author_alias": row.author_alias,
@@ -236,7 +236,7 @@ def admin_moment_visibility(
     db: Session = Depends(get_db),
 ):
     moment = db.get(Moment, moment_id)
-    if moment is None:
+    if moment is None or moment.is_deleted:
         raise HTTPException(404, "内容不存在")
     moment.is_hidden = payload.is_hidden
     audit(db, admin, "hide_moment" if payload.is_hidden else "restore_moment", "moment", moment.id)

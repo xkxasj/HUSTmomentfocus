@@ -61,6 +61,8 @@ const json = async <T>(response: Response): Promise<T> => {
 }
 
 export const api = {
+  editContent: (kind: 'moments' | 'echoes', id: number, content: string) => request(`/api/${kind}/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }) }).then(json<{ updated: boolean }>),
+  deleteContent: (kind: 'moments' | 'echoes', id: number) => request(`/api/${kind}/${id}`, { method: 'DELETE' }).then(json<{ deleted: boolean }>),
   apiBase: currentApiBase,
   setApiBase: (value: string) => localStorage.setItem(API_BASE_KEY, value.trim().replace(/\/$/, '')),
   hasToken: () => Boolean(localStorage.getItem(TOKEN_KEY)),

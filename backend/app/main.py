@@ -45,6 +45,7 @@ from .social import blocked_pair, conversation_state, get_conversation, privacy_
 from .social_migrations import migrate_social
 from .schemas import AccountDeleteRequest, ConversationCreate, EchoCreate, ImageCaptionRequest, LoginRequest, MessageCreate, MomentCreate, MomentOut, PositionUpdate, PrivacyUpdate, PromptRequest, RegisterRequest, ReplySuggestionRequest, ResonanceCreate, SuggestionFeedbackCreate, VerificationRequest
 from .seed import seed_database
+from .content_management import router as content_router
 
 UPLOAD_DIR = Path(os.getenv("MOUKE_UPLOAD_DIR", Path(__file__).resolve().parent / "uploads"))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -150,6 +151,7 @@ def allowed_origins() -> list[str]:
 app = FastAPI(title="某刻 API", version="0.2.0", lifespan=lifespan)
 app.include_router(admin_router)
 app.include_router(social_router)
+app.include_router(content_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins(),
@@ -717,7 +719,7 @@ def moment_interactions(moment_id:int,user:Annotated[User,Depends(get_current_us
     mine = db.scalar(select(Resonance).where(Resonance.moment_id == moment_id, Resonance.user_id == user.id))
     echoes = db.execute(select(Echo, User.alias).outerjoin(User, User.id == Echo.user_id).where(Echo.moment_id == moment_id, Echo.is_hidden.is_(False)).order_by(Echo.created_at, Echo.id)).all()
     return {"my_resonance": mine.kind if mine else None, "resonance_count": len(moment.resonances),
-            "echoes": [{"id": e.id, "content": e.content, "author_alias": alias or "匿名同学", "created_at": e.created_at} for e, alias in echoes]}
+            "echoes": [{"id": e.id, "content": e.content, "is_mine": e.user_id == user.id, "author_alias": alias or "匿名同学", "created_at": e.created_at} for e, alias in echoes]}
 
 @app.post("/api/moments/{moment_id}/echoes")
 def create_echo(moment_id:int,payload:EchoCreate,user:Annotated[User,Depends(get_current_user)],db:Session=Depends(get_db)):
