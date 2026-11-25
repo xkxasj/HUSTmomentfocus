@@ -24,6 +24,7 @@
 - [x] B5 SQLite WAL / busy_timeout / 外键；支持 `MOUKE_DATABASE_URL` 切换 PostgreSQL
 - [x] B6 安全响应头（CSP/HSTS/nosniff/Referrer-Policy/frame-ancestors）与可配置 CORS
 - [x] B7 上传目录可配置、仅图片、纳入备份
+- [~] B8 注册白名单（`MOUKE_ALLOWED_STUDENT_IDS`）。上线前填入首批邀请名单并实测批准与拒绝路径。
 
 ## C. 合规与运营
 

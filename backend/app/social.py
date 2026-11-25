@@ -2,8 +2,8 @@
 from datetime import datetime, timedelta
 import json
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import and_, or_, select, update
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from . import moderation
@@ -11,7 +11,7 @@ from .admin import audit, get_admin_user
 from .auth import get_current_user
 from .database import get_db
 from .db_compat import insert
-from .models import ChatMessage, Conversation, Echo, Moment, Report, User, UserBlock
+from .models import ChatMessage, Conversation, Echo, Moment, Notification, Report, User, UserBlock
 from .schemas import ConversationDecision, ConversationRead, ReportCreate, ReportResolution
 
 router = APIRouter(prefix="/api")
@@ -176,6 +176,37 @@ def report(payload: ReportCreate, user: User = Depends(get_current_user), db: Se
     return {"reported": True}
 
 
+@router.get("/me/notifications")
+def notifications(before: int | None = Query(None, gt=0), user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    query = select(Notification).where(Notification.user_id == user.id)
+    if before:
+        query = query.where(Notification.id < before)
+    rows = list(db.scalars(query.order_by(Notification.id.desc()).limit(21)))
+    return {"items": [{"id": n.id, "kind": n.kind, "text": n.text, "is_read": n.is_read, "created_at": n.created_at} for n in rows[:20]],
+            "has_more": len(rows) > 20,
+            "unread_count": db.scalar(select(func.count()).select_from(Notification).where(Notification.user_id == user.id, Notification.is_read.is_(False)))}
+
+
+@router.post("/me/notifications/{notification_id}/read")
+def read_notification(notification_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    row = db.scalar(select(Notification).where(Notification.id == notification_id, Notification.user_id == user.id))
+    if row is None:
+        raise HTTPException(404, "通知不存在")
+    row.is_read = True
+    db.commit()
+    return {"read": True}
+
+
+@router.get("/me/reports")
+def my_reports(before: int | None = Query(None, gt=0), user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    query = select(Report).where(Report.reporter_id == user.id)
+    if before:
+        query = query.where(Report.id < before)
+    rows = list(db.scalars(query.order_by(Report.id.desc()).limit(21)))
+    return {"items": [{"id": r.id, "target_type": r.target_type, "reason": r.reason, "status": r.status,
+                      "created_at": r.created_at, "resolved_at": r.resolved_at} for r in rows[:20]], "has_more": len(rows) > 20}
+
+
 @router.get("/admin/reports")
 def reports(admin: User = Depends(get_admin_user), db: Session = Depends(get_db)):
     rows = db.scalars(select(Report).order_by((Report.status == "pending").desc(), Report.created_at.desc()).limit(200))
@@ -205,9 +236,13 @@ def resolve_report(report_id: int, payload: ReportResolution, admin: User = Depe
         target = db.get(Conversation, row.target_id)
         if target:
             target.status = "closed"
-    row.status = "dismissed" if payload.action == "dismiss" else "resolved"
-    row.resolution = payload.note.strip()
-    row.resolved_at = datetime.now()
+    status = "dismissed" if payload.action == "dismiss" else "resolved"
+    claimed = db.execute(update(Report).where(Report.id == row.id, Report.status == "pending").values(
+        status=status, resolution=payload.note.strip(), resolved_at=datetime.now(),
+    ))
+    if not claimed.rowcount:
+        raise HTTPException(409, "举报已处理")
+    db.add(Notification(user_id=row.reporter_id, kind="report", text=f"举报 #{row.id} 已处理，请查看我的举报。"))
     audit(db, admin, f"report_{payload.action}", "report", row.id)
     db.commit()
-    return {"status": row.status}
+    return {"status": status}

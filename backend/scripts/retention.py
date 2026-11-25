@@ -30,6 +30,7 @@ from app.models import (  # noqa: E402
     PasswordReset,
     SuggestionFeedback,
     VerificationCode,
+    Notification,
 )
 
 
@@ -50,6 +51,7 @@ def tasks(now: datetime):
         ),
         ("30 天前 AI 用量", AiUsage, AiUsage.created_at < now - timedelta(days=30)),
         ("90 天前埋点", AnalyticsEvent, AnalyticsEvent.created_at < now - timedelta(days=90)),
+        ("90 天前互动通知", Notification, Notification.created_at < now - timedelta(days=90)),
         # 表达语料用于个性化，保留太久没有收益；保留半年足够观察模型效果。
         ("180 天前表达反馈", SuggestionFeedback, SuggestionFeedback.created_at < now - timedelta(days=180)),
     ]

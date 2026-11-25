@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useCampusApp } from '../composables/useCampusApp'
 import { maskEmail, maskStudentId } from '../utils/privacy'
 import { api } from '../api'
+import InboxPanel from '../components/InboxPanel.vue'
 import type { BlockedUser } from '../types'
 import MomentActions from '../components/MomentActions.vue'
 import ContentEditor from '../components/ContentEditor.vue'
@@ -75,6 +76,7 @@ onMounted(load)
       <button class="privacy-toggle" :class="{ active: app.currentUser.value?.share_location }" @click="app.updateLocationPrivacy"><i></i>{{ app.currentUser.value?.share_location ? '已开启' : '已关闭' }}</button>
     </section>
     <p v-if="loading">正在加载你的活动…</p>
+    <InboxPanel />
     <p v-if="error" class="auth-error" role="alert">{{ error }} <button @click="load">重试</button></p>
     <section v-if="app.activity.value" class="section-block">
       <h2>我的活动</h2>

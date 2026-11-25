@@ -138,6 +138,8 @@ export type ReplySuggestion = {
 
 export type Echo = { id: number; content: string; is_mine: boolean; author_alias: string; created_at: string }
 export type Interactions = { my_resonance: string | null; resonance_count: number; echoes: Echo[] }
+export type InboxNotice = { id: number; kind: string; text: string; is_read: boolean; created_at: string }
+export type MyReport = { id: number; target_type: string; reason: string; status: string; created_at: string; resolved_at: string | null }
 export type BlockedUser = { id: number; alias: string; created_at: string }
 export type ReportTarget = 'moment' | 'echo' | 'conversation'
 export type AdminReport = {

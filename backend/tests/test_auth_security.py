@@ -33,6 +33,7 @@ from app.models import (
     User,
     VerificationCode,
 )
+from app.registration import allowed_student_ids
 from app.seed import seed_database
 from app.social_migrations import migrate_social
 
@@ -89,6 +90,24 @@ class AuthSecurityTest(unittest.TestCase):
             "/api/auth/login",
             json={"student_id": student_id, "password": password},
         )
+
+    def test_registration_roster_blocks_sending_and_registration(self):
+        invited = {"student_id": "invite123", "email": "invite123@hust.edu.cn"}
+        excluded = {"student_id": "closed123", "email": "closed123@hust.edu.cn"}
+        with mock.patch.dict(os.environ, {"MOUKE_ALLOWED_STUDENT_IDS": " Invite123 , other456 "}), \
+                mock.patch("app.main.send_verification_email", return_value=True) as send:
+            self.assertEqual(self.client.post("/api/auth/request-code", json=excluded).status_code, 403)
+            send.assert_not_called()
+            response = self.client.post("/api/auth/register", json={**excluded, "code": "123456", "password": "Example123!"})
+            self.assertEqual(response.status_code, 403)
+            self.assertEqual(self.client.post("/api/auth/request-code", json=invited).status_code, 200)
+            send.assert_called_once()
+        with self.sessions() as db:
+            self.assertEqual(list(db.scalars(select(VerificationCode.student_id))), ["INVITE123"])
+
+    def test_registration_roster_rejects_invalid_configuration(self):
+        with mock.patch.dict(os.environ, {"MOUKE_ALLOWED_STUDENT_IDS": ","}), self.assertRaises(RuntimeError):
+            allowed_student_ids()
 
     # --- 生产配置自检 -------------------------------------------------------
 

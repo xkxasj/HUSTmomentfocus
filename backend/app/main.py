@@ -23,6 +23,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.orm import Session, selectinload
 from . import auth_security, moderation, ratelimit
+from .models import Notification
+from .registration import allowed_student_ids, require_registration_invite
 from .database import Base, SessionLocal, engine, get_db
 from .db_compat import IS_SQLITE, insert
 from .models import PasswordReset
@@ -114,6 +116,7 @@ def ensure_map_source() -> dict:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     validate_production_config()
+    allowed_student_ids()
     Base.metadata.create_all(engine)
     # 旧库补列是 SQLite 时代的历史包袱。PostgreSQL 用当前模型 create_all 建库，
     # 没有“表是旧版本”的情况；PRAGMA 在 PG 上也不存在。
@@ -505,6 +508,7 @@ def request_verification_code(payload: VerificationRequest, db: Session = Depend
         "request_code_subject", student_id,
         *auth_security.REQUEST_CODE_SUBJECT, message="该学号获取验证码过于频繁，请稍后再试",
     )
+    require_registration_invite(student_id)
     if db.scalar(select(User).where(or_(User.student_id == student_id, User.email == email))):
         raise HTTPException(409, "该学号已经注册")
     latest = db.scalar(select(VerificationCode).where(VerificationCode.student_id == student_id).order_by(VerificationCode.created_at.desc()))
@@ -532,6 +536,7 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db), request: R
     )
     if email != f"{student_id.lower()}@hust.edu.cn":
         raise HTTPException(400, "教育邮箱与学号不一致")
+    require_registration_invite(student_id)
     if db.scalar(select(User).where(or_(User.student_id == student_id, User.email == email))):
         raise HTTPException(409, "该学号已经注册")
     code = db.scalar(select(VerificationCode).where(VerificationCode.student_id == student_id, VerificationCode.email == email, VerificationCode.consumed.is_(False)).order_by(VerificationCode.created_at.desc()))
@@ -624,6 +629,7 @@ def delete_account(payload: AccountDeleteRequest, user: Annotated[User, Depends(
     db.execute(update(ChatMessage).where(ChatMessage.sender_user_id == uid).values(sender_user_id=None))
     db.execute(delete(UserBlock).where(or_(UserBlock.blocker_id == uid, UserBlock.blocked_id == uid)))
     db.execute(delete(Report).where(Report.reporter_id == uid))
+    db.execute(delete(Notification).where(Notification.user_id == uid))
     db.execute(delete(AiUsage).where(AiUsage.user_id == uid))
     db.execute(delete(SuggestionFeedback).where(SuggestionFeedback.user_id == uid))
     db.execute(delete(AnalyticsEvent).where(AnalyticsEvent.user_id == uid))
@@ -705,7 +711,13 @@ def uploaded_image(filename: str):
 def create_resonance(moment_id:int,payload:ResonanceCreate,user:Annotated[User,Depends(get_current_user)],db:Session=Depends(get_db)):
     moment = visible_moment(db, moment_id)
     if blocked_pair(db, user.id, moment.user_id): raise HTTPException(403, "无法与此用户互动")
-    db.execute(insert(Resonance).values(moment_id=moment_id,user_id=user.id,kind=payload.kind).on_conflict_do_update(index_elements=["moment_id", "user_id"], set_={"kind": payload.kind}))
+    created = db.execute(insert(Resonance).values(moment_id=moment_id, user_id=user.id, kind=payload.kind)
+                         .on_conflict_do_nothing(index_elements=["moment_id", "user_id"]))
+    if not created.rowcount:
+        db.execute(update(Resonance).where(Resonance.moment_id == moment_id, Resonance.user_id == user.id)
+                   .values(kind=payload.kind))
+    elif moment.user_id and moment.user_id != user.id:
+        db.add(Notification(user_id=moment.user_id, kind="resonance", text="有人向你的片段送出了共鸣"))
     db.commit()
     return {"resonance_count":db.scalar(select(func.count()).select_from(Resonance).where(Resonance.moment_id==moment_id)), "my_resonance": payload.kind}
 
@@ -730,7 +742,10 @@ def create_echo(moment_id:int,payload:EchoCreate,user:Annotated[User,Depends(get
     ratelimit.enforce(db, user.id, Echo, ratelimit.ECHO)
     moment = visible_moment(db, moment_id)
     if blocked_pair(db, user.id, moment.user_id): raise HTTPException(403, "无法与此用户互动")
-    db.add(Echo(moment_id=moment_id,user_id=user.id,content=public_text(payload.content))); db.commit()
+    db.add(Echo(moment_id=moment_id, user_id=user.id, content=public_text(payload.content)))
+    if moment.user_id and moment.user_id != user.id:
+        db.add(Notification(user_id=moment.user_id, kind="echo", text="有人在你的片段下留下了一条回声"))
+    db.commit()
     return {"echo_count":db.scalar(select(func.count()).select_from(Echo).where(Echo.moment_id==moment_id, Echo.is_hidden.is_(False)))}
 
 @app.get("/api/me/activity")

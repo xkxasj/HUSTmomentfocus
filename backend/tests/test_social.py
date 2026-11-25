@@ -11,7 +11,7 @@ from sqlalchemy.orm import sessionmaker
 from app.auth import create_access_token
 from app.database import Base, get_db
 from app.main import app
-from app.models import AdminAuditLog, Conversation, Location, Moment, User
+from app.models import AdminAuditLog, Conversation, Location, Moment, Notification, User
 from app.seed import seed_database
 from app.social_migrations import migrate_social
 
@@ -187,6 +187,35 @@ class SocialApiTest(unittest.TestCase):
         self.assertEqual(self.client.post('/api/conversations', headers=self.headers[1], json={"moment_id": self.moment_id}).status_code, 404)
         with self.sessions() as db:
             self.assertEqual(db.scalar(select(AdminAuditLog.action)), "report_hide")
+
+    def test_notification_and_report_feedback_privacy(self):
+        path = f'/api/moments/{self.moment_id}'
+        for _ in range(2):
+            self.client.post(path + '/resonances', headers=self.headers[1], json={"kind": "抱抱你"})
+        self.client.post(path + '/echoes', headers=self.headers[1], json={"content": "你好"})
+        notices = self.client.get('/api/me/notifications', headers=self.headers[0]).json()
+        self.assertEqual(notices['unread_count'], 2)
+        nid = notices['items'][0]['id']
+        self.assertEqual(self.client.post(f'/api/me/notifications/{nid}/read', headers=self.headers[1]).status_code, 404)
+        self.assertEqual(self.client.post(f'/api/me/notifications/{nid}/read', headers=self.headers[0]).status_code, 200)
+        self.assertEqual(self.client.get('/api/me/notifications', headers=self.headers[0]).json()['unread_count'], 1)
+        self.client.post('/api/reports', headers=self.headers[1], json={"target_type": "moment", "target_id": self.moment_id, "reason": "举报测试"})
+        report = self.client.get('/api/me/reports', headers=self.headers[1]).json()['items'][0]
+        self.assertNotIn('evidence', report)
+        self.assertEqual(self.client.get('/api/me/reports', headers=self.headers[2]).json()['items'], [])
+        self.client.patch(f"/api/admin/reports/{report['id']}", headers=self.headers[3], json={"action": "dismiss", "note": "未发现违规"})
+        updated = self.client.get('/api/me/reports', headers=self.headers[1]).json()['items'][0]
+        self.assertEqual(updated['status'], 'dismissed')
+        self.assertNotIn('resolution', updated)
+        self.assertIsNotNone(updated['resolved_at'])
+        self.assertEqual(self.client.get('/api/me/notifications', headers=self.headers[1]).json()['items'][0]['kind'], 'report')
+        with self.sessions() as db:
+            db.add_all([Notification(user_id=self.users[0], kind='echo', text='分页') for _ in range(22)])
+            db.commit()
+        first = self.client.get('/api/me/notifications', headers=self.headers[0]).json()
+        self.assertTrue(first['has_more'])
+        second = self.client.get(f"/api/me/notifications?before={first['items'][-1]['id']}", headers=self.headers[0]).json()
+        self.assertEqual(len(second['items']), 4)
 
     def test_chat_report_only_participants_and_after_block(self):
         cid = self.invite()
